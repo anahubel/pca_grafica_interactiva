@@ -8,7 +8,6 @@ from utils.data_io import load_data
 from utils.views.resumen import render_resumen
 from utils.views.estadistica import render_estadistica
 from utils.views.arbol_decision import render_arbol_decision
-from utils.views.jerarquico import render_jerarquico  # <-- tu nuevo .py
 
 st.set_page_config(page_title="PCA + Clustering", layout="wide")
 st.title("Modelos de negocio: clustering")
