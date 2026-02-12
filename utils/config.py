@@ -6,7 +6,6 @@ BASE_PATH = "data/interim/data_clean.parquet"
 VARS_CLUSTER = [
     "rotacion_stocks",
     "productividad_ventas_pax",
-    "nofs_ventas",
     "productividad_va_pax",
     "inmovilizado_empleado",
 ]
