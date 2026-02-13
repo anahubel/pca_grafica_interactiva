@@ -170,44 +170,47 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
 
     CLUSTER_STORY = {
         "C1": {
-            "titulo": "C1: ciclo largo y VA bajo",
+            "titulo": "C1: modelo de baja productividad y menor desempeño económico",
             "bullets": [
-                "La rotación de stocks es muy baja, el valor de NOFS/Ventas muy altas muestra una fuerte necesidad de financiación.",
-                "Productividad baja similar o inferior a C1, resultados y EBITDA reducidos.",
-                "El valor de personal (%) es el más alto del conjunto, escala pequeña-media algo mayor que C3 pero muy lejos de C2 y la rotación de activos es baja.",
+                "Presenta los niveles más bajos de rotación de stocks y competitividad, lo que sugiere un ciclo operativo más lento y menor dinamismo comercial.",
+                "Es el grupo con mayor NOFS/Ventas, reflejando una mayor necesidad de financiación del circulante y mayor presión sobre recursos operativos.",
+                "Muestra las productividades más bajas (VA/empleado y ventas/empleado) y también los peores resultados (resultado del ejercicio, explotación, EBITDA y cash flow).",
+                "Registra el porcentaje de personal más elevado, apuntando a una estructura más intensiva en trabajo y menos eficiente en términos de generación de valor."
             ],
             "implicaciones": [
-                "Empresas menos dinámicas, pero estables.",
-                "Son empresas con ciclos largos, mayor inmovilización y menor capacidad de convertir recursos en resultados.",
-                "Pueden ser empresas que suelen responder a nichos, especialización o rigidez estructural con menor margen de maniobra.",
+                "Empresas con menor eficiencia operativa y menor capacidad de transformar recursos en resultados.",
+                "El margen de mejora se concentra en elevar productividad, acelerar rotación y optimizar la gestión del circulante.",
+                "Modelo estructuralmente más vulnerable ante shocks de demanda o incrementos de costes."
             ],
         },
+
         "C2": {
-            "titulo": "C2: modelo eficiente, escalable y dominante",
+            "titulo": "C2: modelo altamente productivo y dominante en resultados",
             "bullets": [
-                "Se puede observar que se da una máxima productividad VA y ventas por empleado, resultados EBITDA y cash flow muy superiores.",
-                "Se da una escala enorme de ingresos, activo, fondos propios, inmovilizado, existencias y materiales.",
-                "El valor de las NOFS/Ventas es intermedio con una estructura financiera estable, personal (%) bajo con modelo capital-intensivo.",
-                "El valor de EBITDA (%) y rendimiento más altos, inmovilizado/empleado muy elevado con inversión tecnológica/industrial.",
+                "Es el grupo con mayor productividad (VA/empleado y ventas/empleado), muy por encima de C1 y C3.",
+                "Presenta los niveles más altos de resultado del ejercicio, resultado de explotación, EBITDA y cash flow, evidenciando una fuerte capacidad de generación de valor.",
+                "Tiene el porcentaje de personal más bajo, coherente con un modelo más eficiente y probablemente más capital-intensivo.",
+                "El nivel de NOFS/Ventas es intermedio, mostrando una estructura de circulante equilibrada: menos tensionada que C1 y algo menos ligera que C3."
             ],
             "implicaciones": [
-                "Tenemos empresas grandes, productivas y financieramente sólidas.",
-                "Este es el modelo “ganador” clásico donde se da una eficiencia + escala + productividad, alta capacidad de generación de valor, una estructura madura y robusta.",
-                "Pueden ser empresas industriales consolidadas con modelos de negocio difíciles de replicar.",
+                "Empresas estructuralmente más sólidas, eficientes y con ventajas competitivas claras.",
+                "Modelo líder que combina productividad elevada, eficiencia de costes y fuerte generación de resultados.",
+                "El principal reto estratégico es sostener la ventaja mediante inversión, innovación y mantenimiento de eficiencia al crecer."
             ],
         },
+
         "C3": {
-            "titulo": "C3: modelo intensivo en rotación y margen con baja escala",
+            "titulo": "C3: modelo dinámico, competitivo y ágil en circulante",
             "bullets": [
-                "La rotación de stocks es muy alta con ciclo operativo rápido, alta competitividad.",
-                "NOFS/Ventas bajas con poca financiación del circulante, productividad de ventas y VA por empleado baja/media.",
-                "Los resultados económicos son positivos pero moderados, el personal (%) es elevado indicándonos una estructura intensiva en trabajo.",
-                "La escala es reducida con ingresos, activo, fondos propios e inmovilizado bajos. La alta rotación de activos nos indica que exprimen bien lo que tienen.",
+                "Es el grupo con mayor rotación de stocks y mayor competitividad, reflejando un ciclo operativo rápido y elevada intensidad comercial.",
+                "Presenta el nivel más bajo de NOFS/Ventas, lo que indica menor necesidad de financiación del circulante y mayor agilidad operativa.",
+                "Sus niveles de productividad son intermedios: claramente inferiores a C2, pero superiores a C1 en varios indicadores (especialmente ventas/empleado).",
+                "Los resultados económicos son moderados: mejores que C1 pero sensiblemente inferiores a C2. El porcentaje de personal es intermedio-alto."
             ],
             "implicaciones": [
-                "En este grupo podemos estar englobando empresas pequeñas/medianas muy dinámicas operativamente.",
-                "Empresas que son ágiles, de volumen contenido y que compensan su menor tamaño con rotación, margen operativo y eficiencia comercial.",
-                "No crecen tanto por escala como por velocidad y control operativo.",
+                "Empresas operativamente ágiles que compiten por rotación y eficiencia comercial más que por escala.",
+                "Existe margen para mejorar productividad y aproximarse al desempeño estructural de C2.",
+                "Modelo flexible y financieramente más ligero, pero dependiente de mantener volumen y dinamismo comercial."
             ],
         },
     }
