@@ -6,6 +6,8 @@ BASE_PATH = "data/interim/data_clean.parquet"
 VARS_CLUSTER = [
     "rotacion_stocks",
     "productividad_ventas_pax",
+    "margen",
+    "nofs_ventas",
     "productividad_va_pax",
     "inmovilizado_empleado",
 ]
@@ -90,4 +92,4 @@ EXCLUDE_VARS = {
 }
 
 # variables que vienen logadas en tu pipeline (mismo nombre)
-LOGGED_IN_MODEL = {"rotacion_stocks", "ingresos_de_explotacion"}
+LOGGED_IN_MODEL = {"rotacion_stocks"}
