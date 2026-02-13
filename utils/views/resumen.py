@@ -1,26 +1,157 @@
 # utils/views/resumen.py
 import io
+import os
+import glob
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils.config import VARS_CLUSTER, LABELS
+from utils.config import VARS_CLUSTER, LABELS, DATA_PATH
 from utils.fmt import to_display_scale, fmt_num
 
 
-def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
+# ============================================================
+# Helpers: encontrar y mergear ingresos_de_explotacion
+# ============================================================
+def _read_any(path: str) -> pd.DataFrame | None:
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".csv":
+            return pd.read_csv(path)
+        if ext in [".xlsx", ".xls"]:
+            return pd.read_excel(path)
+        if ext == ".parquet":
+            return pd.read_parquet(path)
+    except Exception:
+        return None
+    return None
+
+
+def _list_candidate_files(root: str) -> list[str]:
+    """Devuelve archivos candidatos (parquet/csv/xlsx/xls) bajo root (si root es carpeta) o root si es fichero."""
+    if not root:
+        return []
+    if os.path.isfile(root):
+        return [root]
+    if os.path.isdir(root):
+        patterns = ["**/*.parquet", "**/*.csv", "**/*.xlsx", "**/*.xls"]
+        files: list[str] = []
+        for p in patterns:
+            files.extend(glob.glob(os.path.join(root, p), recursive=True))
+        return files
+    return []
+
+
+@st.cache_data(show_spinner=False)
+def _find_base_with_ingresos(base_path: str | None) -> tuple[pd.DataFrame | None, str | None]:
+    """
+    Busca una base que contenga ingresos_de_explotacion, en este orden:
+      1) base_path (si es fichero o carpeta)
+      2) carpeta de DATA_PATH
+      3) carpeta de base_path (si era fichero)
+      4) carpeta ./data (si existe)
+    """
+    search_roots: list[str] = []
+
+    if base_path:
+        search_roots.append(base_path)
+        if os.path.isfile(base_path):
+            search_roots.append(os.path.dirname(base_path))
+
+    if DATA_PATH:
+        search_roots.append(os.path.dirname(DATA_PATH))
+
+    if os.path.isdir("data"):
+        search_roots.append("data")
+
+    candidates: list[str] = []
+    for r in search_roots:
+        candidates.extend(_list_candidate_files(r))
+
+    # heurística: priorizar nombres típicos de base original/completa
+    def score(p: str) -> int:
+        name = os.path.basename(p).lower()
+        s = 0
+        if any(k in name for k in ["original", "completa", "full", "raw", "base"]):
+            s += 10
+        if "clean" in name:
+            s -= 2
+        if "interim" in p.lower():
+            s -= 1
+        return -s  # para sort asc
+
+    candidates = sorted(list(dict.fromkeys(candidates)), key=score)
+
+    for f in candidates:
+        df_full = _read_any(f)
+        if df_full is None:
+            continue
+        if "ingresos_de_explotacion" in df_full.columns:
+            return df_full, f
+
+    return None, None
+
+
+def _ensure_ingresos(df_view: pd.DataFrame, base_path: str | None, diagnostic: bool = False) -> pd.DataFrame:
+    """
+    Garantiza que df_view tenga ingresos_de_explotacion.
+    Si no, busca una base con ingresos y hace merge por codigo_nif o nombre.
+    """
+    if "ingresos_de_explotacion" in df_view.columns:
+        return df_view
+
+    df_full, _src = _find_base_with_ingresos(base_path)
+    if df_full is None:
+        # Sin diagnóstico visible (no checkbox), pero si quisieras activarlo en dev:
+        if diagnostic:
+            st.warning(
+                "No encuentro ninguna base con 'ingresos_de_explotacion' "
+                "(busqué en base_path, carpeta de DATA_PATH y ./data)."
+            )
+        return df_view
+
+    merge_key = None
+    if "codigo_nif" in df_view.columns and "codigo_nif" in df_full.columns:
+        merge_key = "codigo_nif"
+    elif "nombre" in df_view.columns and "nombre" in df_full.columns:
+        merge_key = "nombre"
+
+    if merge_key is None:
+        if diagnostic:
+            st.warning("No puedo hacer merge: no hay clave común (codigo_nif o nombre).")
+        return df_view
+
+    df_full2 = df_full[[merge_key, "ingresos_de_explotacion"]].copy()
+    df_full2["ingresos_de_explotacion"] = pd.to_numeric(df_full2["ingresos_de_explotacion"], errors="coerce")
+
+    out = df_view.merge(df_full2, on=merge_key, how="left")
+
+    # Nada visible: sin caption verde, sin botones
+    if diagnostic:
+        st.caption(f"Base ingresos usada: {_src}")
+        st.caption(f"Merge key: {merge_key} · ingresos no-nulo: {out['ingresos_de_explotacion'].notna().sum()}")
+
+    return out
+
+
+# ============================================================
+# Vista Resumen
+# ============================================================
+def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: str | None = None):
+    df = df.copy()
+
     # ======================
     # SELECTOR EMPRESA
     # ======================
     if "codigo_nif" in df.columns:
-        df["empresa_key"] = df["nombre"] + "  —  " + df["codigo_nif"]
+        df["empresa_key"] = df["nombre"].astype(str) + "  —  " + df["codigo_nif"].astype(str)
         selector_col = "empresa_key"
     else:
         selector_col = "nombre"
 
-    empresa_sel = st.selectbox("Busca/selecciona empresa", sorted(df[selector_col].unique()))
+    empresa_sel = st.selectbox("Busca/selecciona empresa", sorted(df[selector_col].dropna().unique()))
     row = df.loc[df[selector_col] == empresa_sel].iloc[0]
 
     # Referencia (cluster o total)
@@ -93,33 +224,34 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
     # ======================
     # RADAR
     # ======================
-    def make_radar(df_ref: pd.DataFrame, row: pd.Series) -> go.Figure:
-        categories = []
-        empresa_vals = []
+    def make_radar(df_ref_: pd.DataFrame, row_: pd.Series) -> go.Figure:
+        categories: list[str] = []
+        empresa_vals: list[float] = []
 
         for var in VARS_CLUSTER:
-            if var not in df_ref.columns:
+            if var not in df_ref_.columns:
                 continue
-
-            s = pd.to_numeric(df_ref[var], errors="coerce").dropna()
-            v = pd.to_numeric(row.get(var, np.nan), errors="coerce")
+            s = pd.to_numeric(df_ref_[var], errors="coerce").dropna()
+            v = pd.to_numeric(row_.get(var, np.nan), errors="coerce")
             if len(s) == 0 or pd.isna(v):
                 continue
 
-            s_disp = to_display_scale(var, s)
+            _s_disp = to_display_scale(var, s)
             v_disp = float(to_display_scale(var, pd.Series([v])).iloc[0])
 
             categories.append(LABELS.get(var, var))
             empresa_vals.append(v_disp)
 
         if len(categories) < 3:
-            fig = go.Figure()
-            fig.update_layout(height=340, margin=dict(l=30, r=30, t=30, b=30), title="Radar (perfil de la empresa)")
-            return fig
+            fig0 = go.Figure()
+            fig0.update_layout(height=340, margin=dict(l=30, r=30, t=30, b=30), title="Radar (perfil de la empresa)")
+            return fig0
 
-        emp_norm = []
-        for i, var in enumerate([v for v in VARS_CLUSTER if LABELS.get(v, v) in categories]):
-            s = pd.to_numeric(df_ref[var], errors="coerce").dropna()
+        emp_norm: list[float] = []
+        vars_in = [v for v in VARS_CLUSTER if LABELS.get(v, v) in categories]
+
+        for i, var in enumerate(vars_in):
+            s = pd.to_numeric(df_ref_[var], errors="coerce").dropna()
             if len(s) == 0:
                 continue
             s_disp = to_display_scale(var, s)
@@ -132,11 +264,17 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
             e = max(0.0, min(2.0, e)) / 2.0
             emp_norm.append(e)
 
+        if len(emp_norm) != len(categories):
+            # fallback seguro si hubiera algún descuadre por datos faltantes
+            fig0 = go.Figure()
+            fig0.update_layout(height=340, margin=dict(l=30, r=30, t=30, b=30), title="Radar (perfil de la empresa)")
+            return fig0
+
         categories_closed = categories + [categories[0]]
         emp_closed = emp_norm + [emp_norm[0]]
 
-        fig = go.Figure()
-        fig.add_trace(
+        fig1 = go.Figure()
+        fig1.add_trace(
             go.Scatterpolar(
                 r=emp_closed,
                 theta=categories_closed,
@@ -146,14 +284,14 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
                 hovertemplate="%{theta}: %{r:.0%}<extra></extra>",
             )
         )
-        fig.update_layout(
+        fig1.update_layout(
             height=420,
             margin=dict(l=30, r=30, t=50, b=30),
             polar=dict(radialaxis=dict(visible=True, range=[0, 1], tickformat=".0%")),
             showlegend=False,
             title="Radar — perfil de la empresa (normalizado por IQR)",
         )
-        return fig
+        return fig1
 
     # ======================
     # FUNCIONES: percentil + score global
@@ -188,9 +326,6 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
     # ======================
     left, right = st.columns([2.2, 1.3], gap="large")
 
-    # ----------------------
-    # LEFT: PCA + EXPLICACIÓN + RADAR
-    # ----------------------
     with left:
         st.markdown('<div id="pca"></div>', unsafe_allow_html=True)
 
@@ -201,7 +336,11 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
             color="cluster_label",
             hover_name="nombre",
             opacity=0.65,
-            labels={"PC1": "Componente principal 1", "PC2": "Componente principal 2", "cluster_label": "Modelo de negocio"},
+            labels={
+                "PC1": "Componente principal 1",
+                "PC2": "Componente principal 2",
+                "cluster_label": "Modelo de negocio",
+            },
         )
         fig.update_traces(marker=dict(size=7))
         fig.update_layout(legend=dict(orientation="h", y=-0.2))
@@ -222,46 +361,10 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
 
         st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander("ℹ️ ¿Qué representa este PCA? (explicación + contribución de indicadores)", expanded=False):
-            st.markdown(
-                """
-**Cómo leer el gráfico:**
-- Cada punto es una empresa.
-- Empresas cercanas → perfiles de indicadores similares (en el espacio estandarizado del modelo).
-- Los colores corresponden al clúster asignado por K-means.
-- PC1 y PC2 son combinaciones lineales de los indicadores (resumen de la variabilidad).
-
-**Nota práctica:** como en la app no re-entrenamos el PCA, estimamos la “influencia” de cada indicador con su **correlación** con PC1 y PC2.
-"""
-            )
-            corr_rows = []
-            for var in VARS_CLUSTER:
-                if var not in df.columns:
-                    continue
-                x = pd.to_numeric(df[var], errors="coerce")
-                corr1 = x.corr(df["PC1"])
-                corr2 = x.corr(df["PC2"])
-                corr_rows.append({"Indicador": LABELS.get(var, var), "corr(PC1)": corr1, "corr(PC2)": corr2})
-            corr_df = pd.DataFrame(corr_rows)
-            if not corr_df.empty:
-                corr_df["|corr(PC1)|"] = corr_df["corr(PC1)"].abs()
-                corr_df["|corr(PC2)|"] = corr_df["corr(PC2)"].abs()
-                corr_df = corr_df.sort_values(["|corr(PC1)|", "|corr(PC2)|"], ascending=False).drop(
-                    columns=["|corr(PC1)|", "|corr(PC2)|"]
-                )
-                st.dataframe(
-                    corr_df.style.format({"corr(PC1)": "{:.3f}", "corr(PC2)": "{:.3f}"}),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.info("No hay datos suficientes para calcular correlaciones con PC1/PC2.")
-
         st.markdown('<div id="interpretacion"></div>', unsafe_allow_html=True)
         st.divider()
         st.subheader("Interpretación del clúster")
         st.caption(f"Clúster: **{cluster_sel}** · n={n_sel} ({pct_sel:.1f}% de la muestra)")
-
         st.markdown(f"**{story['titulo']}**")
         st.markdown("- " + "\n- ".join(story["bullets"]))
         st.markdown("**Implicaciones prácticas:**")
@@ -270,12 +373,9 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
         st.markdown('<div id="perfil-radar"></div>', unsafe_allow_html=True)
         st.divider()
         st.subheader("Perfil (radar)")
-        radar_fig = make_radar(df_ref=df_ref, row=row)
+        radar_fig = make_radar(df_ref_=df_ref, row_=row)
         st.plotly_chart(radar_fig, use_container_width=True)
 
-    # ----------------------
-    # RIGHT: INDICADORES + PERCENTILES + SCORE GLOBAL
-    # ----------------------
     with right:
         st.markdown('<div id="indicadores"></div>', unsafe_allow_html=True)
 
@@ -289,7 +389,7 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
 
         rows = []
         EPS = 1e-9
-        score_list = []
+        score_list: list[float] = []
 
         for var in VARS_CLUSTER:
             if var not in df.columns or var not in df_ref.columns:
@@ -379,173 +479,70 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
             st.warning("No hay indicadores para mostrar.")
 
     # ======================
-    # COMPARACIÓN VISUAL
-    # ======================
-    st.markdown('<div id="comparacion-visual"></div>', unsafe_allow_html=True)
-    st.divider()
-    st.subheader("Comparación visual (empresa vs mediana)")
-
-    if stats_df.empty:
-        st.info("No hay suficientes datos para el gráfico.")
-    else:
-        viz = stats_df.dropna(subset=["Valor empresa", "Mediana", "Q1", "Q3"]).copy()
-        viz["abs_gap"] = (viz["Valor empresa"] - viz["Mediana"]).abs()
-        viz = viz.sort_values("abs_gap", ascending=False)
-
-        max_n = max(4, min(12, len(viz)))
-        top_n = st.slider("Nº de indicadores a mostrar", 4, max_n, min(8, max_n))
-        viz = viz.head(top_n)
-
-        use_log = st.checkbox("Escala log (recomendado si hay magnitudes muy distintas)", value=True)
-
-        viz = viz.iloc[::-1].copy()
-        ycats = viz["Indicador"].tolist()
-
-        fig2 = go.Figure()
-        fig2.add_trace(
-            go.Scatter(
-                x=viz["Valor empresa"],
-                y=viz["Indicador"],
-                mode="markers",
-                name="Empresa",
-                marker=dict(size=10),
-                hovertemplate="Empresa: %{x}<extra></extra>",
-            )
-        )
-        fig2.add_trace(
-            go.Scatter(
-                x=viz["Mediana"],
-                y=viz["Indicador"],
-                mode="markers",
-                name="Mediana",
-                marker=dict(size=10, symbol="line-ns-open"),
-                hovertemplate="Mediana: %{x}<extra></extra>",
-            )
-        )
-
-        shapes = []
-        for _, r in viz.iterrows():
-            shapes.append(
-                dict(
-                    type="line",
-                    x0=r["Q1"],
-                    x1=r["Q3"],
-                    y0=r["Indicador"],
-                    y1=r["Indicador"],
-                    line=dict(width=10),
-                    opacity=0.25,
-                )
-            )
-
-        fig2.update_layout(
-            shapes=shapes,
-            height=260 + 35 * len(viz),
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title="Valor",
-            yaxis_title="",
-            yaxis=dict(categoryorder="array", categoryarray=ycats),
-            legend=dict(orientation="h", y=-0.2),
-        )
-
-        if use_log:
-            fig2.update_xaxes(type="log")
-
-        st.plotly_chart(fig2, use_container_width=True)
-
-    # ======================
-    # CASOS TIPO
-    # ======================
-    st.markdown('<div id="casos-tipo"></div>', unsafe_allow_html=True)
-    st.divider()
-    st.subheader("Casos tipo (por clúster)")
-
-    rep_n = 3
-    out_n = 1
-
-    tmp = df[["nombre", "cluster_label", "PC1", "PC2"]].dropna().copy()
-    if tmp.empty:
-        st.info("No hay datos suficientes para construir casos tipo.")
-    else:
-        cases_rows = []
-        for cl, g in tmp.groupby("cluster_label"):
-            c1 = float(g["PC1"].mean())
-            c2 = float(g["PC2"].mean())
-            d = np.sqrt((g["PC1"] - c1) ** 2 + (g["PC2"] - c2) ** 2)
-            gg = g.copy()
-            gg["dist"] = d
-
-            reps = gg.sort_values("dist", ascending=True).head(rep_n)
-            outs = gg.sort_values("dist", ascending=False).head(out_n)
-
-            for _, r in reps.iterrows():
-                cases_rows.append({"Cluster": cl, "Tipo": "Representativa", "Empresa": r["nombre"]})
-            for _, r in outs.iterrows():
-                cases_rows.append({"Cluster": cl, "Tipo": "Outlier", "Empresa": r["nombre"]})
-
-        cases_df = pd.DataFrame(cases_rows)
-        st.dataframe(cases_df, use_container_width=True, hide_index=True)
-
-    # ======================
-    # TOP EMPRESAS
+    # TOP EMPRESAS (por ingresos)
     # ======================
     st.markdown('<div id="top-empresas"></div>', unsafe_allow_html=True)
     st.divider()
     st.subheader("Top empresas (global o por localidad)")
 
-    if "ingresos_de_explotacion" in df.columns:
-        df["ingresos_rank"] = np.expm1(pd.to_numeric(df["ingresos_de_explotacion"], errors="coerce"))
-    else:
-        df["ingresos_rank"] = np.nan
+    # IMPORTANT: diagnostic oculto (sin checkbox)
+    df_top = _ensure_ingresos(df_view=df, base_path=base_path, diagnostic=False)
 
-    clusters = sorted(df["cluster_label"].dropna().unique())
+    if "ingresos_de_explotacion" not in df_top.columns:
+        st.warning("No puedo calcular el Top: falta ingresos_de_explotacion.")
+        return
+
+    df_top["ingresos_rank"] = pd.to_numeric(df_top["ingresos_de_explotacion"], errors="coerce")
+
+    clusters = sorted(df_top["cluster_label"].dropna().unique())
     if not clusters:
         st.info("No hay clusters disponibles.")
+        return
+
+    colA, colB = st.columns([1.2, 1.0])
+    with colA:
+        cluster_choice = st.selectbox("Cluster", clusters)
+    with colB:
+        top_n = st.slider("Top N", 5, 30, 10, 1)
+
+    df_c = df_top[df_top["cluster_label"] == cluster_choice].copy()
+
+    loc_col = None
+    if "localidad_grp" in df_c.columns:
+        loc_col = "localidad_grp"
+    elif "localidad" in df_c.columns:
+        loc_col = "localidad"
+
+    opciones = ["Global (todas)"]
+    if loc_col:
+        opciones += sorted(df_c[loc_col].dropna().unique())
+
+    scope_choice = st.selectbox("Ámbito", opciones, index=0)
+
+    if scope_choice == "Global (todas)":
+        df_rank = df_c.copy()
+        titulo = f"Top {top_n} — {cluster_choice} (global)"
     else:
-        colA, colB = st.columns([1.2, 1.0])
+        df_rank = df_c[df_c[loc_col] == scope_choice].copy()
+        titulo = f"Top {top_n} — {cluster_choice} · {scope_choice}"
 
-        with colA:
-            cluster_choice = st.selectbox("Cluster", clusters)
+    top_df = (
+        df_rank.dropna(subset=["ingresos_rank"])
+        .sort_values("ingresos_rank", ascending=False)
+        .head(top_n)
+        .loc[:, ["nombre", "ingresos_rank"]]
+        .rename(columns={"ingresos_rank": "Ingresos de explotación"})
+    )
 
-        with colB:
-            top_n = st.slider("Top N", 5, 30, 10, 1)
+    st.markdown(f"### {titulo}")
 
-        df_c = df[df["cluster_label"] == cluster_choice].copy()
-
-        loc_col = None
-        if "localidad_grp" in df_c.columns:
-            loc_col = "localidad_grp"
-        elif "localidad" in df_c.columns:
-            loc_col = "localidad"
-
-        opciones = ["Global (todas)"]
-        if loc_col:
-            opciones += sorted(df_c[loc_col].dropna().unique())
-
-        scope_choice = st.selectbox("Ámbito", opciones, index=0)
-
-        if scope_choice == "Global (todas)":
-            df_rank = df_c.copy()
-            titulo = f"Top {top_n} — {cluster_choice} (global)"
-        else:
-            df_rank = df_c[df_c[loc_col] == scope_choice].copy()
-            titulo = f"Top {top_n} — {cluster_choice} · {scope_choice}"
-
-        top_df = (
-            df_rank.dropna(subset=["ingresos_rank"])
-            .sort_values("ingresos_rank", ascending=False)
-            .head(top_n)
-            .loc[:, ["nombre"]]
-        )
-
-        st.markdown(f"### {titulo}")
-
-        if top_df.empty:
-            st.info("No hay datos suficientes para este filtro.")
-        else:
-            top_df = top_df.reset_index(drop=True)
-            top_df.index += 1
-            top_df.index.name = "Ranking"
-            st.dataframe(top_df, use_container_width=True)
+    if top_df.empty:
+        st.info("No hay datos suficientes para este filtro.")
+    else:
+        top_df = top_df.reset_index(drop=True)
+        top_df.index += 1
+        top_df.index.name = "Ranking"
+        st.dataframe(top_df, use_container_width=True)
 
     # ======================
     # DESCARGAS
@@ -569,12 +566,12 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool):
             mime="text/csv",
         )
 
-    mini_cols = [c for c in ["nombre", "cluster_label", "PC1", "PC2"] + VARS_CLUSTER if c in df.columns]
+    mini_cols = [c for c in ["nombre", "cluster_label", "PC1", "PC2"] + VARS_CLUSTER if c in df_ref.columns]
     buf2 = io.StringIO()
     df_ref[mini_cols].to_csv(buf2, index=False)
     st.download_button(
         label="⬇️ Descargar datos de referencia (CSV)",
         data=buf2.getvalue().encode("utf-8"),
-        file_name=f"datos_referencia_{'cluster' if comparar_con=='Solo su cluster' else 'total'}.csv",
+        file_name=f"datos_referencia_{'cluster' if comparar_con == 'Solo su cluster' else 'total'}.csv",
         mime="text/csv",
     )

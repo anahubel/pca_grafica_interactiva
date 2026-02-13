@@ -1,9 +1,13 @@
 # utils/views/estadistica.py
 import io
+import os
+import glob
+import inspect
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go  # ✅ FIX: necesario para fig_iqr
+import plotly.graph_objects as go
 import streamlit as st
 from itertools import combinations
 from math import erf, sqrt
@@ -18,6 +22,25 @@ from utils.stats import (
     compute_posthoc_mwu,
 )
 
+# ============================================================
+# DEBUG / UI MESSAGES
+#   - Ponlo en True solo si quieres ver warnings/captions/expander
+# ============================================================
+DEBUG_UI = False
+
+def _ui_info(msg: str):
+    if DEBUG_UI:
+        st.info(msg)
+
+def _ui_warning(msg: str):
+    if DEBUG_UI:
+        st.warning(msg)
+
+def _ui_caption(msg: str):
+    if DEBUG_UI:
+        st.caption(msg)
+
+
 # ======================
 # Labels helpers (UI)
 # ======================
@@ -25,20 +48,13 @@ def _label_of(var: str) -> str:
     return LABELS.get(var, var)
 
 def _make_label_maps(vars_list: list[str]):
-    """
-    Devuelve:
-      - out_labels: lista de labels (únicos) para mostrar al usuario
-      - lab_to_var: dict label->var real
-    Si hay labels duplicados, añade [var] al final para desambiguar.
-    """
     labels = [_label_of(v) for v in vars_list]
     seen = {}
     out_labels = []
     for v, lab in zip(vars_list, labels):
         if lab in seen:
             seen[lab] += 1
-            lab2 = f"{lab} [{v}]"
-            out_labels.append(lab2)
+            out_labels.append(f"{lab} [{v}]")
         else:
             seen[lab] = 1
             out_labels.append(lab)
@@ -47,13 +63,255 @@ def _make_label_maps(vars_list: list[str]):
 
 
 # ======================
-# Post-hoc categóricas helpers
+# Numeric parsing (robusto)
+# ======================
+def _coerce_numeric_series(s: pd.Series) -> pd.Series:
+    """
+    Convierte a numérico sin romper notación científica (E+05) y soporta formatos ES:
+      - "1.234,56"  -> 1234.56
+      - "5,9E+05"   -> 590000.0
+      - "5.9E+05"   -> 590000.0
+    """
+    if s is None:
+        return pd.Series([], dtype=float)
+
+    if pd.api.types.is_numeric_dtype(s):
+        return pd.to_numeric(s, errors="coerce")
+
+    x = s.astype(str).str.strip()
+    x = x.str.replace("\u00a0", "", regex=False)
+
+    mask_sci = x.str.contains(r"[eE]", na=False)
+    if mask_sci.any():
+        xs = x.where(mask_sci, "")
+        xs = xs.str.replace(",", ".", regex=False)
+        x = x.where(~mask_sci, xs)
+
+    mask_es = (~mask_sci) & x.str.contains(r"\.", na=False) & x.str.contains(r",", na=False)
+    if mask_es.any():
+        xe = x.where(mask_es, "")
+        xe = xe.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+        x = x.where(~mask_es, xe)
+
+    mask_comma = (~mask_sci) & (~mask_es) & x.str.contains(",", na=False)
+    if mask_comma.any():
+        xc = x.where(mask_comma, "")
+        xc = xc.str.replace(",", ".", regex=False)
+        x = x.where(~mask_comma, xc)
+
+    return pd.to_numeric(x, errors="coerce")
+
+
+def _to_display(var: str, s: pd.Series) -> pd.Series:
+    """
+    MODO SEGURO (para que NO se distorsione nada mientras validamos resultados):
+    - NO aplicar to_display_scale aquí.
+    """
+    return s
+
+
+# ======================
+# Read parquet ONLY (duckdb opcional)
+# ======================
+def _has_duckdb() -> bool:
+    try:
+        import duckdb  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _read_full_base(base_path: str) -> pd.DataFrame:
+    """
+    Lee base completa SOLO desde parquet.
+    Si pyarrow falla, intenta fastparquet.
+    Si duckdb está instalado, también intenta duckdb y repara a data_clean_fixed.parquet.
+    NO usa CSV.
+    """
+    def _try_pyarrow(p: str):
+        try:
+            return pd.read_parquet(p, engine="pyarrow"), None
+        except Exception as e:
+            return None, e
+
+    def _try_fastparquet(p: str):
+        try:
+            return pd.read_parquet(p, engine="fastparquet"), None
+        except Exception as e:
+            return None, e
+
+    def _try_duckdb(p: str):
+        try:
+            import duckdb
+            con = duckdb.connect(database=":memory:")
+            df = con.execute("SELECT * FROM read_parquet(?)", [p]).df()
+            con.close()
+            return df, None
+        except Exception as e:
+            return None, e
+
+    def _repair_with_duckdb(in_p: str, out_p: str) -> bool:
+        try:
+            import duckdb
+            con = duckdb.connect(database=":memory:")
+            con.execute(
+                "COPY (SELECT * FROM read_parquet(?)) TO ? (FORMAT 'parquet')",
+                [in_p, out_p],
+            )
+            con.close()
+            return True
+        except Exception:
+            return False
+
+    # candidatos parquet
+    if os.path.isdir(base_path):
+        cand = [
+            os.path.join(base_path, "data_clean_fixed.parquet"),
+            os.path.join(base_path, "data_clean.parquet"),
+            os.path.join(base_path, "data.parquet"),
+        ]
+        cand += sorted(glob.glob(os.path.join(base_path, "*.parquet")))
+    else:
+        cand = [base_path] if str(base_path).lower().endswith(".parquet") else []
+        if not cand:
+            raise FileNotFoundError("base_path no es directorio ni archivo parquet.")
+
+    last_err = None
+    last_path = None
+
+    for p in cand:
+        if not p or not os.path.exists(p):
+            continue
+        last_path = p
+
+        df, err = _try_pyarrow(p)
+        if df is not None:
+            return df
+        last_err = err
+
+        df, err = _try_fastparquet(p)
+        if df is not None:
+            # antes: st.warning(...)
+            _ui_warning(f"Leí el parquet con fastparquet: {os.path.basename(p)}")
+            return df
+        last_err = err
+
+        # DuckDB solo si existe
+        if _has_duckdb():
+            df, err = _try_duckdb(p)
+            if df is not None:
+                out_p = (
+                    os.path.join(base_path, "data_clean_fixed.parquet")
+                    if os.path.isdir(base_path)
+                    else (os.path.splitext(p)[0] + "_fixed.parquet")
+                )
+                ok = _repair_with_duckdb(p, out_p)
+                if ok and os.path.exists(out_p):
+                    _ui_warning(f"Parquet reparado y guardado: {os.path.basename(out_p)}")
+                    df2, _ = _try_pyarrow(out_p)
+                    return df2 if df2 is not None else df
+                _ui_warning("DuckDB leyó el parquet pero no pudo escribir el fixed. Uso DF leído por DuckDB.")
+                return df
+            last_err = err
+
+    if not _has_duckdb():
+        _ui_info("Nota: duckdb no está instalado. Si tienes parquet 'raros', instala duckdb para repararlos.")
+
+    raise RuntimeError(f"No pude leer ningún parquet. Último archivo: {last_path}. Último error: {last_err}")
+
+
+def _best_merge_key(df_base: pd.DataFrame, df_clusters: pd.DataFrame) -> str | None:
+    candidates = ["empresa_key", "codigo_nif", "nif", "cif", "id_empresa", "id", "codigo"]
+    for k in candidates:
+        if k in df_base.columns and k in df_clusters.columns:
+            return k
+
+    common = [c for c in df_base.columns.intersection(df_clusters.columns)]
+    bad = {"cluster_label", "cluster_modelo_negocio", "nombre", "Name"}
+    common = [c for c in common if c not in bad]
+    if not common:
+        return None
+
+    best = None
+    best_nu = -1
+    for c in common:
+        nu = df_clusters[c].nunique(dropna=True)
+        if nu > best_nu:
+            best_nu = nu
+            best = c
+    return best
+
+
+def _normalize_key(s: pd.Series) -> pd.Series:
+    """
+    Normaliza claves para merge robusto:
+    - convierte a string
+    - strip espacios
+    - quita sufijo .0 típico de excel ("12345.0" -> "12345")
+    - conserva ceros a la izquierda si ya venían como texto
+    """
+    x = s.astype(str).str.strip()
+    x = x.str.replace(r"\.0$", "", regex=True)
+    x = x.str.replace(r"\s+", "", regex=True)
+    x = x.replace({"nan": np.nan, "None": np.nan})
+    return x
+
+
+def _load_full_with_clusters(base_path: str, df_clusters: pd.DataFrame) -> pd.DataFrame:
+    """
+    Carga parquet COMPLETO (raw) + añade SOLO cluster_label desde df_clusters.
+    NO pisa variables numéricas con df_clusters (evita valores escalados/bajos).
+    """
+    df_base = _read_full_base(base_path)
+
+    dfc = df_clusters.copy()
+    if "cluster_label" not in dfc.columns:
+        raise ValueError("df_clusters no contiene 'cluster_label'.")
+
+    key = _best_merge_key(df_base, dfc)
+    if key is None:
+        raise ValueError(
+            "No encuentro una clave común para el merge. "
+            "Asegúrate de compartir 'empresa_key' o 'codigo_nif' (u otra ID común)."
+        )
+
+    # Normaliza keys en ambos lados
+    df_base[key] = _normalize_key(df_base[key])
+    dfc[key] = _normalize_key(dfc[key])
+
+    # 1 fila por key en clusters
+    dup = int(dfc[key].duplicated(keep=False).sum())
+    if dup > 0:
+        _ui_warning(f"⚠️ df_clusters tiene duplicados en `{key}` (n={dup}). Mantengo la primera ocurrencia por key.")
+    dfc_keep = dfc[[key, "cluster_label"]].drop_duplicates(subset=[key], keep="first")
+
+    # Diagnóstico de solape antes del merge (oculto)
+    base_keys = set(df_base[key].dropna().unique())
+    clus_keys = set(dfc_keep[key].dropna().unique())
+    inter = len(base_keys.intersection(clus_keys))
+    _ui_caption(f"Solape de claves base∩clusters: {inter} | base={len(base_keys)} | clusters={len(clus_keys)}")
+
+    # Merge
+    df_full = df_base.merge(dfc_keep, on=key, how="inner", validate="m:1")
+
+    # Avisos de pérdidas (ocultos)
+    lost_from_base = len(base_keys) - inter
+    lost_from_clusters = len(clus_keys) - inter
+    if lost_from_base > 0:
+        _ui_warning(f"⚠️ {lost_from_base} claves están en base pero no en clusters (no entran en estadística).")
+    if lost_from_clusters > 0:
+        _ui_warning(f"⚠️ {lost_from_clusters} claves están en clusters pero no en base (revisa la base/parquet).")
+
+    return df_full
+
+
+# ======================
+# Post-hoc helpers categóricas
 # ======================
 def _norm_cdf(z: float) -> float:
     return 0.5 * (1.0 + erf(z / sqrt(2.0)))
 
 def two_prop_ztest(x1: int, n1: int, x2: int, n2: int) -> float:
-    """Two-proportion z-test (dos colas) con aproximación normal."""
     if n1 <= 0 or n2 <= 0:
         return np.nan
     p_pool = (x1 + x2) / (n1 + n2)
@@ -64,7 +322,6 @@ def two_prop_ztest(x1: int, n1: int, x2: int, n2: int) -> float:
     return float(2 * (1 - _norm_cdf(abs(z))))
 
 def p_adjust_holm(pvals: list[float]) -> list[float]:
-    """Holm step-down (monótono)."""
     m = len(pvals)
     order = np.argsort(pvals)
     adj = np.empty(m, dtype=float)
@@ -77,7 +334,6 @@ def p_adjust_holm(pvals: list[float]) -> list[float]:
     return adj.tolist()
 
 def p_adjust_bonferroni(pvals: list[float]) -> list[float]:
-    """Bonferroni."""
     m = len(pvals)
     return [min(1.0, float(p) * m) for p in pvals]
 
@@ -93,13 +349,26 @@ def cramers_v_from_ct(ct: pd.DataFrame, chi2: float) -> float:
 # ======================
 # MAIN VIEW
 # ======================
-def render_estadistica(df: pd.DataFrame, base_path: str):
+def render_estadistica(
+    df: pd.DataFrame,
+    base_path: str,
+    group_col: str = "cluster_label",
+    title: str | None = None
+):
+    if title:
+        st.header(title)
+
+    if group_col != "cluster_label":
+        df_app_for_base = df.copy()
+        df_app_for_base["cluster_label"] = df_app_for_base[group_col]
+    else:
+        df_app_for_base = df
+
     st.header("Estadística del modelo")
 
+    # ---- carga + merge
     try:
-        df_full = load_base_with_clusters(base_path, df)
-
-        # recodes opcionales
+        df_full = _load_full_with_clusters(base_path=base_path, df_clusters=df_app_for_base)
         try:
             from utils.recodes import apply_recodes
             df_full = apply_recodes(df_full)
@@ -107,14 +376,57 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
             pass
 
     except Exception as e:
-        st.error(f"No he podido cargar la base completa o hacer el merge con clusters: {e}")
+        st.error(f"No he podido cargar la base completa y mergear clusters: {e}")
         st.stop()
 
     if "cluster_label" not in df_full.columns:
         st.error("No existe `cluster_label` en la base completa tras el merge.")
         st.stop()
 
+    # Filtramos solo con cluster
     df_full = df_full[df_full["cluster_label"].notna()].copy()
+
+    # Guardar base completa para que Resumen la pueda reutilizar
+    st.session_state["df_base_full"] = df_full
+
+    # ======================
+    # AUDITORÍA (oculta por defecto)
+    # ======================
+    if DEBUG_UI:
+        with st.expander("🧪 Auditoría de datos (valida que coincide con tus cálculos)", expanded=False):
+            st.write("**Shape df_full:**", df_full.shape)
+            st.write("**Clusters (counts):**")
+            st.write(df_full["cluster_label"].value_counts(dropna=False))
+
+            key_candidates = ["empresa_key", "codigo_nif", "nif", "cif", "id_empresa", "id", "codigo"]
+            key_in = next((k for k in key_candidates if k in df_full.columns), None)
+            if key_in:
+                dup = int(df_full[key_in].duplicated(keep=False).sum())
+                st.write(f"**Key detectada:** `{key_in}`")
+                st.write(f"**Duplicados en key dentro de df_full:** {dup}")
+                if dup > 0:
+                    st.warning("Duplicados en key dentro de df_full: revisa el merge y la unicidad de la clave.")
+            else:
+                st.warning("No detecto key típica en df_full.")
+
+            vars_check = [v for v in ["rotacion_stocks"] if v in df_full.columns]
+            for v in vars_check:
+                st.write(f"### `{v}` (dtype={df_full[v].dtype})")
+                raw = df_full[v]
+                st.write("Ejemplos crudos:", raw.dropna().astype(str).head(10).tolist())
+                num = _coerce_numeric_series(raw)
+                st.write("Convertibles (% no-NA):", float(num.notna().mean()))
+                if num.notna().any():
+                    st.write("Min/Median/Max:", (float(num.min()), float(num.median()), float(num.max())))
+                    try:
+                        disp = to_display_scale(v, num)
+                        st.write("Min/Median/Max (to_display_scale):", (float(disp.min()), float(disp.median()), float(disp.max())))
+                        if float(num.median()) != 0:
+                            st.write("Ratio mediana display/raw:", float(disp.median()) / float(num.median()))
+                    except Exception as e:
+                        st.write("to_display_scale error:", e)
+
+        st.caption(f"Base usada en estadística: {df_full.shape[0]} filas × {df_full.shape[1]} columnas")
 
     try:
         from scipy.stats import kruskal, chi2_contingency, mannwhitneyu
@@ -122,7 +434,6 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
         st.error("Necesitas `scipy`. Instala: pip install scipy")
         st.stop()
 
-    # --- Cliff's delta usando MWU ---
     def cliffs_delta(x: np.ndarray, y: np.ndarray) -> float:
         x = np.asarray(x)
         y = np.asarray(y)
@@ -132,15 +443,7 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
         U = mannwhitneyu(x, y, alternative="two-sided").statistic
         return (2.0 * U) / (n1 * n2) - 1.0
 
-    # --- contingencias ---
     def format_contingency_like_report(ct: pd.DataFrame):
-        """
-        ct: filas=cluster_label, columnas=categorías (conteos)
-        Devuelve:
-          - report_df: filas=categorías, columnas=clusters, celdas "n (p%)" donde p es % dentro de clúster
-          - pct_long: long para plot (%)
-          - pct_wide: wide (%), index=cluster
-        """
         clusters_order = [c for c in ["C1", "C2", "C3"] if c in ct.index]
         rest = [c for c in ct.index if c not in clusters_order]
         ct = ct.reindex(clusters_order + rest)
@@ -154,7 +457,6 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
             p_vals = pct_wide.loc[cl]
             out[cl] = ["" if pd.isna(n) else f"{int(n)} ({p:.1f}%)" for n, p in zip(n_vals.values, p_vals.values)]
 
-        # Columna estándar "Categoría"
         report_df = out.reset_index().rename(columns={"index": "Categoría"})
 
         pct_long = (
@@ -162,16 +464,12 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
             .melt(id_vars="cluster_label", var_name="Categoría", value_name="Pct")
             .rename(columns={"cluster_label": "Cluster"})
         )
-
         return report_df, pct_long, pct_wide
 
-    # ----------------------
-    # Tabs
-    # ----------------------
     tab_num, tab_cat = st.tabs(["Análisis de variables numéricas", "Análisis de variables categóricas"])
 
     # ======================
-    # NUMÉRICAS + POST-HOC
+    # NUMÉRICAS
     # ======================
     with tab_num:
         st.subheader("Análisis de variables numéricas")
@@ -185,12 +483,18 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
                 continue
             if c in EXCLUDE_VARS:
                 continue
-            if pd.api.types.is_numeric_dtype(df_full[c]):
+
+            col = df_full[c]
+            if pd.api.types.is_numeric_dtype(col):
+                numeric_cols.append(c)
+                continue
+
+            conv = _coerce_numeric_series(col)
+            non_na_ratio = float(conv.notna().mean()) if len(conv) else 0.0
+            if non_na_ratio >= 0.70:
                 numeric_cols.append(c)
 
         numeric_cols = sorted(numeric_cols)
-
-        # ✅ UI con labels (y vuelta a var real)
         num_labels, num_lab_to_var = _make_label_maps(numeric_cols)
 
         vars_selected_raw = st.multiselect(
@@ -216,8 +520,8 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
             groups = []
 
             for cl in clusters:
-                s = pd.to_numeric(df_full.loc[df_full["cluster_label"] == cl, var], errors="coerce").dropna()
-                s_disp = to_display_scale(var, s).dropna()
+                s = _coerce_numeric_series(df_full.loc[df_full["cluster_label"] == cl, var]).dropna()
+                s_disp = _to_display(var, s).dropna()
                 disp_by_cluster[cl] = s_disp
                 if len(s_disp) > 0:
                     groups.append(s_disp.values)
@@ -261,12 +565,8 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
 
         stats_num["P-valor"] = pd.to_numeric(stats_num["P-valor"], errors="coerce")
         stats_num = stats_num.sort_values("P-valor", ascending=True).reset_index(drop=True)
-
         show_df = stats_num.drop(columns=["_var"]).copy()
 
-        # ======================
-        # ✅ GRÁFICO 3: Top variables por ε²
-        # ======================
         st.markdown("#### Top variables por tamaño de efecto (ε²)")
         tmp_eff = stats_num[["Indicador", "ε²"]].copy()
         tmp_eff["ε²"] = pd.to_numeric(tmp_eff["ε²"], errors="coerce")
@@ -315,7 +615,6 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
         st.markdown("### Tabla resumen (haz click en una fila para ver el post-hoc)")
         selected_var = None
 
-        # click (si está disponible en tu Streamlit)
         try:
             ev = st.dataframe(
                 sty,
@@ -350,16 +649,12 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
         if not selected_var:
             st.info("Selecciona una variable para ver el post-hoc.")
         else:
-            # ======================
-            # GRÁFICO: Distribución por clúster (box + puntos)
-            # ======================
             st.markdown("#### Distribución por clúster")
 
             plot_df = df_full[["cluster_label", selected_var]].copy()
-            plot_df[selected_var] = pd.to_numeric(plot_df[selected_var], errors="coerce")
+            plot_df[selected_var] = _coerce_numeric_series(plot_df[selected_var])
             plot_df = plot_df.dropna(subset=["cluster_label", selected_var]).copy()
-
-            plot_df["Valor"] = to_display_scale(selected_var, plot_df[selected_var])
+            plot_df["Valor"] = _to_display(selected_var, plot_df[selected_var])
 
             order = [c for c in ["C1", "C2", "C3"] if c in plot_df["cluster_label"].unique()]
             rest = [c for c in sorted(plot_df["cluster_label"].unique()) if c not in order]
@@ -376,11 +671,7 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
             fig_dist.update_layout(height=420, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_dist, use_container_width=True)
 
-            # ======================
-            # GRÁFICO: Mediana + IQR por clúster
-            # ======================
             st.markdown("#### Mediana e IQR por clúster")
-
             sum_rows = []
             for cl in order:
                 s = plot_df.loc[plot_df["cluster_label"] == cl, "Valor"].dropna()
@@ -406,7 +697,6 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
                         line=dict(width=10),
                         opacity=0.25,
                     )
-
                 fig_iqr.update_layout(
                     height=280,
                     margin=dict(l=10, r=10, t=10, b=10),
@@ -428,8 +718,8 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
 
             data_by = {}
             for cl in clusters:
-                s = pd.to_numeric(df_full.loc[df_full["cluster_label"] == cl, selected_var], errors="coerce").dropna()
-                s = to_display_scale(selected_var, s).dropna()
+                s = _coerce_numeric_series(df_full.loc[df_full["cluster_label"] == cl, selected_var]).dropna()
+                s = _to_display(selected_var, s).dropna()
                 data_by[cl] = s.values
 
             posthoc_df = compute_posthoc_mwu(
@@ -464,7 +754,7 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
             )
 
     # ======================
-    # CATEGÓRICAS + POST-HOC + CONTINGENCIAS
+    # CATEGÓRICAS (tu bloque original, sin tocar lógica)
     # ======================
     with tab_cat:
         st.subheader("Análisis de variables categóricas")
@@ -478,7 +768,7 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
 
         cat_cols = []
         for c in df_full.columns:
-            if c in {"codigo_nif", "nombre", "cluster_label", "PC1", "PC2", "empresa_key"}:
+            if c in {"codigo_nif", "nombre", "cluster_label", "PC1", "PC2", "cluster_modelo_negocio", "empresa_key"}:
                 continue
             if c in EXCLUDE_VARS:
                 continue
@@ -494,7 +784,6 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
             st.info("No veo variables categóricas en la base completa.")
             st.stop()
 
-        # ✅ UI con labels (y vuelta a var real)
         cat_labels, cat_lab_to_var = _make_label_maps(cat_cols)
 
         vars_cat_raw = st.multiselect(
@@ -522,7 +811,7 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
         )
 
         res_rows = []
-        contingencias = []  # (var, ct_raw, ct_report, pct_long, pct_wide, dominant)
+        contingencias = []
 
         for var in vars_cat:
             sub = df_full[["cluster_label", var]].dropna().copy()
@@ -779,13 +1068,11 @@ def render_estadistica(df: pd.DataFrame, base_path: str):
                 return report_df
 
             df_show = report_df.copy()
-
             cat_col = None
             for cand in ["Categoría", "Categoria", "category", "Category"]:
                 if cand in df_show.columns:
                     cat_col = cand
                     break
-
             if cat_col is None:
                 df_show = df_show.reset_index().rename(columns={"index": "Categoría"})
                 cat_col = "Categoría"

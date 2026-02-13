@@ -227,7 +227,7 @@ def render_arbol_decision(df_app: pd.DataFrame, base_path: str):
 
     # Base completa + clusters
     try:
-        df_full = load_base_with_clusters(base_path, df_app)
+        df_full = df_app.copy()
 
         try:
             from utils.recodes import apply_recodes
