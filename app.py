@@ -38,6 +38,15 @@ vista = st.radio(
 DATA_MTIME = os.path.getmtime(DATA_PATH) if os.path.exists(DATA_PATH) else 0.0
 df = load_data(DATA_PATH, DATA_MTIME)
 
+import streamlit as st
+from utils.config import VARS_CLUSTER
+
+st.write("BASE_PATH:", BASE_PATH)
+st.write("df shape:", df.shape)
+st.write("VARS_CLUSTER:", VARS_CLUSTER)
+st.write("Missing:", [c for c in VARS_CLUSTER if c not in df.columns])
+st.write("Columns (first 50):", list(df.columns)[:50])
+
 required_cols = ["PC1", "PC2", "cluster_label", "nombre"]
 missing_required = [c for c in required_cols if c not in df.columns]
 if missing_required:
