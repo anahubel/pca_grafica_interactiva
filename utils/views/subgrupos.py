@@ -143,10 +143,72 @@ def render_subgrupos(
         # Reutiliza tu vista del resumen general para que la gráfica sea EXACTAMENTE igual
         from utils.views.resumen import render_resumen
 
+        from utils.views.resumen import render_resumen
+
+        # Textos para subgrupos (C1) -> claves "1.0", "2.0", "3.0"
+        SUBGROUP_STORY = {
+            "1.0": {
+                "titulo": "C1.1: capital-intensivo y productivo",
+                "rasgos_estructurales": [
+                    "Inmovilizado/empleado: el más alto del subgrupo.",
+                    "Productividad VA/pax: la más alta del subgrupo.",
+                    "Rotación de stocks: intermedia.",
+                ],
+                "rasgos_economicos": [],
+                "lectura_economica": [
+                    "Perfil basado en estructura/capacidad y productividad, más que en velocidad comercial.",
+                    "Mayor rigidez operativa (costes fijos/activos) si cae la demanda.",
+                ],
+                "implicaciones": [
+                    "Asegurar utilización eficiente de capacidad y disciplina de inversión.",
+                    "Mejoras de eficiencia operativa para sostener productividad.",
+                ],
+            },
+            "2.0": {
+                "titulo": "C1.2: ligero pero menos eficiente",
+                "rasgos_estructurales": [
+                    "Rotación de stocks: la más baja del subgrupo.",
+                    "Productividad VA/pax: la más baja del subgrupo.",
+                    "Inmovilizado/empleado: el más bajo del subgrupo.",
+                ],
+                "rasgos_economicos": [],
+                "lectura_economica": [
+                    "Menos estructura y menor capacidad de convertir en valor.",
+                    "Subgrupo potencialmente más vulnerable dentro de C1.",
+                ],
+                "implicaciones": [
+                    "Prioridad: elevar productividad (procesos/organización/mix) y eficiencia.",
+                    "Revisar disciplina de circulante y costes.",
+                ],
+            },
+            "3.0": {
+                "titulo": "C1.3: ágil en rotación, productividad intermedia",
+                "rasgos_estructurales": [
+                    "Rotación de stocks: la más alta del subgrupo.",
+                    "Productividad VA/pax: intermedia.",
+                    "Inmovilizado/empleado: intermedio.",
+                ],
+                "rasgos_economicos": [],
+                "lectura_economica": [
+                    "Compite más por agilidad/ejecución que por intensidad de capital.",
+                    "Puede escalar si convierte rotación en margen y eficiencia.",
+                ],
+                "implicaciones": [
+                    "Mejorar margen/eficiencia sin perder rotación.",
+                    "Vigilar sensibilidad a caídas de volumen.",
+                ],
+            },
+        }
+
         render_resumen(
             df=df_subapp,
             comparar_con=comparar_con,
-            zoom=zoom
+            zoom=zoom,
+            base_path=base_path,
+            normalize_cluster_labels=False,           # 👈 CLAVE: NO convertir 1.0 -> C1
+            story_map_override=SUBGROUP_STORY,        # 👈 CLAVE: textos por subgrupo
+            story_title="Interpretación del subgrupo",
+            show_subgroup_interpretation=False,       # 👈 para que NO salga el bloque extra
         )
 
         # (Opcional) Si quieres además dejar estas tablas del subgrupo debajo

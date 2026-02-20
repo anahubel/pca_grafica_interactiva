@@ -135,7 +135,16 @@ def _ensure_ingresos(df_view: pd.DataFrame, base_path: str | None, diagnostic: b
 # ============================================================
 # Vista Resumen
 # ============================================================
-def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: str | None = None):
+def render_resumen(
+    df: pd.DataFrame,
+    comparar_con: str,
+    zoom: bool,
+    base_path: str | None = None,
+    show_subgroup_interpretation: bool = False,   # 👈 por defecto NO
+    story_map_override: dict | None = None,        # 👈 opcional (Textil)
+    story_title: str = "Interpretación del clúster",  # 👈 opcional (Textil)
+    normalize_cluster_labels: bool = True,   # 👈 NUEVO
+):
     df = df.copy()
 
     # ======================
@@ -154,10 +163,15 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
     # Normaliza cluster_label (por si viene como 1.0/2.0/3.0)
     # ======================
     _raw_cluster = row.get("cluster_label", "—")
-    _cluster_map = {"1": "C1", "1.0": "C1", "2": "C2", "2.0": "C2", "3": "C3", "3.0": "C3"}
-    cluster_sel = _cluster_map.get(str(_raw_cluster).strip(), str(_raw_cluster).strip())
+    if normalize_cluster_labels:
+        _cluster_map = {"1": "C1", "1.0": "C1", "2": "C2", "2.0": "C2", "3": "C3", "3.0": "C3"}
+        cluster_sel = _cluster_map.get(str(_raw_cluster).strip(), str(_raw_cluster).strip())
+    else:
+        cluster_sel = str(_raw_cluster).strip()
 
+    # ======================
     # Referencia (cluster o total)
+    # ======================
     if comparar_con == "Solo su cluster" and "cluster_label" in df.columns and "cluster_label" in row.index:
         df_ref = df[df["cluster_label"] == _raw_cluster].copy()
         if df_ref.empty and cluster_sel in {"C1", "C2", "C3"}:
@@ -166,31 +180,14 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
         df_ref = df.copy()
 
     # ======================
-    # INTERPRETACIÓN CLÚSTER + SUBGRUPO (solo C1)
+    # Tamaño cluster seleccionado
     # ======================
     CLUSTER_N = df["cluster_label"].value_counts(dropna=True).to_dict() if "cluster_label" in df.columns else {}
     n_sel = int(CLUSTER_N.get(_raw_cluster, CLUSTER_N.get(cluster_sel, 0)))
     pct_sel = (n_sel / max(1, len(df))) * 100.0
 
-    # ---- SUBGRUPO: SOLO lo detectamos si el cluster general es C1
-    #      (esto evita que aparezcan "subgrupos" en C2/C3)
-    ALLOWED_C1_SUBGROUP_COLS = ["cluster_modelo_negocio", "cluster_k3", "cluster_k3_label"]
-
-    subgroup_col = None
-    subgroup_sel = None
-    if cluster_sel == "C1":
-        subgroup_col = next((c for c in ALLOWED_C1_SUBGROUP_COLS if c in df.columns), None)
-        if subgroup_col is not None:
-            v = row.get(subgroup_col, None)
-            if pd.notna(v):
-                subgroup_sel = str(v).strip()
-
-    # Normaliza subgrupo si viene "1"/"2"/"3"
-    if subgroup_sel in {"1", "2", "3"}:
-        subgroup_sel = {"1": "1.0", "2": "2.0", "3": "3.0"}[subgroup_sel]
-
     # ======================
-    # Textos: clúster general + subgrupos SOLO C1
+    # Textos: clúster general
     # ======================
     CLUSTER_STORY = {
         "C1": {
@@ -263,7 +260,26 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
         },
     }
 
-    # Subgrupos SOLO C1
+    # ✅ story_map override (Textil u otras vistas)
+    _story_map = story_map_override if isinstance(story_map_override, dict) else CLUSTER_STORY
+    story = _story_map.get(
+        str(cluster_sel),
+        {
+            "titulo": "Interpretación no definida",
+            "rasgos_estructurales": ["Define aquí el texto del clúster."],
+            "rasgos_economicos": [],
+            "lectura_economica": [],
+            "implicaciones": [],
+        },
+    )
+
+    # ======================
+    # SUBGRUPO (SOLO si show_subgroup_interpretation=True)
+    # ======================
+    subgroup_col = None
+    subgroup_sel = None
+    sub_story = None
+
     SUBGROUP_STORY_C1 = {
         "1.0": {
             "titulo": "C1.1: capital-intensivo y productivo",
@@ -318,37 +334,22 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
         },
     }
 
-    # Story principal (cluster general)
-    story = CLUSTER_STORY.get(
-        str(cluster_sel),
-        {
-            "titulo": "Interpretación no definida",
-            "rasgos_estructurales": ["Define aquí el texto del clúster."],
-            "rasgos_economicos": [],
-            "lectura_economica": [],
-            "implicaciones": [],
-        },
-    )
+    if show_subgroup_interpretation and cluster_sel == "C1":
+        # detecta columna (solo C1)
+        ALLOWED_C1_SUBGROUP_COLS = ["cluster_modelo_negocio", "cluster_k3", "cluster_k3_label"]
+        subgroup_col = next((c for c in ALLOWED_C1_SUBGROUP_COLS if c in df.columns), None)
 
-    # Subgrupos: SOLO para C1 y solo si subgroup_sel es válido
-    show_subgroups_c1 = (
-        (cluster_sel == "C1")
-        and (subgroup_col is not None)
-        and (subgroup_sel in {"1.0", "2.0", "3.0"})
-    )
+        if subgroup_col is not None:
+            v = row.get(subgroup_col, None)
+            if pd.notna(v):
+                subgroup_sel = str(v).strip()
 
-    sub_story = SUBGROUP_STORY_C1.get(subgroup_sel) if show_subgroups_c1 else None
-    if show_subgroups_c1:
-        sub_story = SUBGROUP_STORY_C1.get(
-            str(subgroup_sel),
-            {
-                "titulo": "Interpretación de subgrupo no definida",
-                "rasgos_estructurales": ["No hay texto para este subgrupo."],
-                "rasgos_economicos": [],
-                "lectura_economica": [],
-                "implicaciones": [],
-            },
-        )
+        # normaliza 1/2/3 -> 1.0/2.0/3.0
+        if subgroup_sel in {"1", "2", "3"}:
+            subgroup_sel = {"1": "1.0", "2": "2.0", "3": "3.0"}[subgroup_sel]
+
+        if subgroup_sel in {"1.0", "2.0", "3.0"}:
+            sub_story = SUBGROUP_STORY_C1.get(subgroup_sel)
 
     # ======================
     # RADAR
@@ -492,7 +493,10 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
 
         st.markdown('<div id="interpretacion"></div>', unsafe_allow_html=True)
         st.divider()
-        st.subheader("Interpretación del clúster")
+
+        # 👇 título configurable (Textil)
+        st.subheader(story_title)
+
         st.caption(f"Clúster: **{cluster_sel}** · n={n_sel} ({pct_sel:.1f}% de la muestra)")
         st.markdown(f"**{story.get('titulo', '—')}**")
 
@@ -508,8 +512,8 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
         st.markdown("**Implicaciones prácticas:**")
         st.markdown("- " + "\n- ".join(story.get("implicaciones", [])))
 
-        # ===== SUBGRUPOS: SOLO C1, y render DENTRO de la columna izquierda =====
-        if show_subgroups_c1 and sub_story is not None:
+        # ✅ Subgrupo SOLO si lo activas explícitamente
+        if show_subgroup_interpretation and sub_story is not None:
             st.divider()
             st.subheader("Interpretación del subgrupo (solo C1)")
 
