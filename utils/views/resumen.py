@@ -159,228 +159,196 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
 
     # Referencia (cluster o total)
     if comparar_con == "Solo su cluster" and "cluster_label" in df.columns and "cluster_label" in row.index:
-        # ojo: filtramos por el valor real que haya en df (puede ser "C1" o "1.0")
         df_ref = df[df["cluster_label"] == _raw_cluster].copy()
-        # fallback por si df está ya normalizado en texto
         if df_ref.empty and cluster_sel in {"C1", "C2", "C3"}:
             df_ref = df[df["cluster_label"] == cluster_sel].copy()
     else:
         df_ref = df.copy()
 
     # ======================
-    # INTERPRETACIÓN CLÚSTER + SUBGRUPO (si existe) + IMPLICACIONES
+    # INTERPRETACIÓN CLÚSTER + SUBGRUPO (solo C1)
     # ======================
     CLUSTER_N = df["cluster_label"].value_counts(dropna=True).to_dict() if "cluster_label" in df.columns else {}
     n_sel = int(CLUSTER_N.get(_raw_cluster, CLUSTER_N.get(cluster_sel, 0)))
     pct_sel = (n_sel / max(1, len(df))) * 100.0
 
-    # ---- detectar columna de subgrupo (si existe)
-    SUBGROUP_COL_CANDIDATES = [
-        "subgrupo", "subgrupo_label", "subgrupo_cluster",
-        "cluster_subgrupo", "cluster_subgrupo_label",
-        "subcluster", "subcluster_label",
-        "cluster_k3", "cluster_k3_label",
-        "cluster_modelo_negocio",
-    ]
-    subgroup_col = next((c for c in SUBGROUP_COL_CANDIDATES if c in df.columns), None)
-    subgroup_sel = None
-    if subgroup_col is not None:
-        v = row.get(subgroup_col, None)
-        if pd.notna(v):
-            subgroup_sel = str(v).strip()  # suele venir como "1.0", "2.0", "3.0"
+    # ---- SUBGRUPO: SOLO lo detectamos si el cluster general es C1
+    #      (esto evita que aparezcan "subgrupos" en C2/C3)
+    ALLOWED_C1_SUBGROUP_COLS = ["cluster_modelo_negocio", "cluster_k3", "cluster_k3_label"]
 
+    subgroup_col = None
+    subgroup_sel = None
+    if cluster_sel == "C1":
+        subgroup_col = next((c for c in ALLOWED_C1_SUBGROUP_COLS if c in df.columns), None)
+        if subgroup_col is not None:
+            v = row.get(subgroup_col, None)
+            if pd.notna(v):
+                subgroup_sel = str(v).strip()
+
+    # Normaliza subgrupo si viene "1"/"2"/"3"
+    if subgroup_sel in {"1", "2", "3"}:
+        subgroup_sel = {"1": "1.0", "2": "2.0", "3": "3.0"}[subgroup_sel]
+
+    # ======================
+    # Textos: clúster general + subgrupos SOLO C1
+    # ======================
     CLUSTER_STORY = {
         "C1": {
-            "titulo": "C1: modelo lento, exigente en circulante y poco rentable",
-            "bullets": [
-                "Presenta la rotación de stocks más baja y el nivel de competitividad más reducido, lo que sugiere un ciclo operativo más lento.",
-                "Es el grupo con mayor NOFS/Ventas, indicando una mayor necesidad de financiar el circulante (mayor dependencia de recursos para sostener la operativa).",
-                "Muestra las productividades más bajas (VA/empleado y ventas/empleado) y también los peores resultados (resultado del ejercicio, explotación, EBITDA y cash flow).",
-                "El porcentaje de personal es el más alto del conjunto, apuntando a una estructura más intensiva en trabajo y menos eficiente.",
+            "titulo": "C1: modelo intensivo en circulante y eficiencia media-baja",
+            "rasgos_estructurales": [
+                "Rotación de stocks: la más baja del conjunto (ciclo operativo más lento).",
+                "Productividad VA/pax: la más reducida (menor eficiencia en generación de valor).",
+                "Inmovilizado/empleado: nivel intermedio (estructura productiva moderada).",
+                "NOFS/Ventas: el más elevado (mayor presión de circulante y financiación operativa).",
+            ],
+            "rasgos_economicos": [
+                "Resultados y rentabilidad: peor desempeño (resultado del ejercicio, explotación, EBITDA y cash flow).",
+                "Estructura: mayor % de personal y márgenes contenidos, coherente con un modelo más intensivo en operativa y menos eficiente.",
+            ],
+            "lectura_economica": [
+                "Empresas con ciclo operativo más lento y mayor necesidad de financiar existencias y clientes.",
+                "Menor eficiencia productiva por trabajador y rentabilidad limitada.",
+                "Modelo tradicional y operativo, con menor dinamismo comercial.",
             ],
             "implicaciones": [
-                "Empresas con menor dinamismo comercial/operativo y con más presión financiera por el circulante.",
-                "El foco de mejora suele estar en acelerar rotación, optimizar gestión de existencias/cobros/pagos y elevar productividad.",
-                "Modelo más vulnerable: si no mejora eficiencia, cualquier shock de demanda o de costes se traslada rápido a resultados.",
+                "Mejoras típicas: acelerar rotación, optimizar existencias/cobros/pagos y reducir tensión de circulante.",
+                "Prioridad: elevar productividad (procesos/organización/eficiencia).",
+                "Modelo más vulnerable: un shock de demanda o costes se traslada rápido a resultados.",
             ],
         },
         "C2": {
-            "titulo": "C2: modelo líder en productividad y generación de resultados",
-            "bullets": [
-                "Es el grupo con mayor productividad (VA/empleado y ventas/empleado), muy por encima de C1 y C3.",
-                "Registra los niveles más altos de resultado del ejercicio, resultado de explotación, EBITDA y cash flow, mostrando fuerte capacidad de generar valor.",
-                "Tiene el porcentaje de personal más bajo, lo que encaja con un modelo más eficiente/capital-intensivo y escalable.",
-                "Mantiene NOFS/Ventas en un nivel intermedio: estructura de circulante más equilibrada que C1, sin llegar al nivel “ligero” de C3.",
+            "titulo": "C2: modelo ágil y eficiente en circulante (perfil competitivo)",
+            "rasgos_estructurales": [
+                "Rotación de stocks: la más alta del conjunto (máxima agilidad operativa/comercial).",
+                "NOFS/Ventas: el más bajo (modelo más “ligero” en circulante, menor necesidad de financiación operativa).",
+                "Inmovilizado/empleado: relativamente bajo (estructura menos rígida).",
+                "Productividad VA/pax: nivel intermedio (mejora más por rotación/ejecución que por capital).",
+            ],
+            "rasgos_economicos": [
+                "Competitividad: niveles más altos (perfil dinámico y orientado a ejecución).",
+                "Resultados: moderados/positivos, típicamente mejores que C1 pero sin el perfil capital-intensivo de C3.",
+            ],
+            "lectura_economica": [
+                "Empresas con ciclo operativo rápido, buena disciplina de circulante y alto dinamismo comercial.",
+                "Modelo eficiente en capital circulante: aguanta mejor tensiones de liquidez.",
+                "Compite por velocidad/ejecución más que por intensidad de capital.",
             ],
             "implicaciones": [
-                "Empresas más sólidas y eficientes: suelen sostener ventajas competitivas por escala, procesos y productividad.",
-                "Modelo “ganador”: combina productividad + resultados + eficiencia de costes laborales.",
-                "El reto típico no es sobrevivir, sino mantener la ventaja: innovación, inversión selectiva y control de complejidad al crecer.",
+                "Modelo resiliente en términos de liquidez: menos exposición a tensiones por circulante.",
+                "Palanca de mejora: subir margen/eficiencia sin perder rotación.",
+                "Sensibilidad: necesita sostener volumen/rotación; caídas de demanda pueden impactar rápido.",
             ],
         },
         "C3": {
-            "titulo": "C3: modelo dinámico y competitivo, ligero en circulante",
-            "bullets": [
-                "Es el grupo con mayor rotación de stocks y mayor competitividad, reflejando un ciclo operativo más rápido y presión comercial elevada.",
-                "Presenta el NOFS/Ventas más bajo, lo que sugiere una necesidad menor de financiar el circulante (modelo más “ligero” y ágil).",
-                "Sus productividades son intermedias: claramente por debajo de C2, pero en general por encima de C1 (especialmente en ventas/empleado).",
-                "Los resultados (ejercicio, explotación, EBITDA y cash flow) son moderados: mejores que C1 pero lejos del nivel de C2. El personal (%) es intermedio-alto.",
+            "titulo": "C3: modelo intensivo en capital y alta productividad",
+            "rasgos_estructurales": [
+                "Inmovilizado/empleado: el más alto (modelo intensivo en capital/activos).",
+                "Productividad VA/pax: la más alta (alto valor generado por unidad de trabajo).",
+                "Rotación de stocks: intermedia (no compite por velocidad sino por estructura/productividad).",
+            ],
+            "rasgos_economicos": [
+                "Resultados: superiores (mayor generación de EBITDA, cash flow y resultado del ejercicio).",
+                "Escala: niveles de activo y fondos propios más altos, coherente con estructura intensiva en capital.",
+            ],
+            "lectura_economica": [
+                "Empresas con estructura productiva fuerte, inversión relevante en activos y alta productividad.",
+                "Modelo más sofisticado (posible perfil industrial/tecnológico o con economías de escala).",
+                "Rinde bien si mantiene utilización eficiente de la capacidad instalada.",
             ],
             "implicaciones": [
-                "Empresas operativamente ágiles: compiten por velocidad, rotación y ejecución.",
-                "El crecimiento suele venir de optimizar margen/eficiencia y profesionalizar procesos para acercarse al desempeño de C2.",
-                "Modelo con buena flexibilidad financiera (bajo NOFS/Ventas), pero sensible a caídas de demanda porque necesita mantener volumen/rotación.",
+                "Modelo robusto: mayor capacidad de inversión y resistencia ante shocks moderados.",
+                "Riesgo típico: rigidez (costes fijos/capex) si cae demanda o baja utilización de activos.",
+                "Foco: asegurar eficiencia del capital y disciplina de inversión/mantenimiento.",
             ],
         },
     }
 
-    # ======================
-    # SUBGRUPOS (k=3) — textos basados en tus perfiles sintéticos (medianas)
-    # OJO: aquí asumo subgrupo "1.0/2.0/3.0" dentro de cada C1/C2/C3
-    # ======================
-    SUBGROUP_STORY = {
-        "C1": {
-            "1.0": {
-                "titulo": "Subgrupo 1 (C1.1): más intensivo en VA y activos, pero con menor eficiencia comercial",
-                "bullets": [
-                    "Productividad VA/pax e inmovilizado/empleado altos: perfil más intensivo en estructura/capacidad.",
-                    "Rotación de stocks y NOFS/Ventas en zona intermedia: no es el más ágil, pero tampoco el más tensionado dentro de C1.",
-                    "Ventas/pax y margen más bajos del clúster: convierte peor la estructura en rendimiento comercial.",
-                ],
-                "implicaciones": [
-                    "Prioridad: mejorar margen y ejecución comercial (pricing/mix/eficiencia) para “monetizar” la estructura productiva.",
-                    "Optimizar rotación y procesos para reducir rigidez y mejorar caja.",
-                ],
-            },
-            "2.0": {
-                "titulo": "Subgrupo 2 (C1.2): el C1 más ágil y mejor ejecutor",
-                "bullets": [
-                    "Mayor rotación de stocks, mayor ventas/pax y mayor margen: es el subgrupo con mejor desempeño operativo-comercial dentro de C1.",
-                    "NOFS/Ventas e inmovilizado/empleado bajos: estructura más ligera y menos exigente en financiación del circulante.",
-                    "Productividad VA/pax intermedia: mejora sobre todo por rotación y margen.",
-                ],
-                "implicaciones": [
-                    "Candidato natural a converger hacia un modelo más eficiente si consolida productividad y profesionaliza procesos.",
-                    "Mantener disciplina de circulante (cobros/pagos/stock) para sostener la agilidad.",
-                ],
-            },
-            "3.0": {
-                "titulo": "Subgrupo 3 (C1.3): el más tensionado en circulante y el menos productivo",
-                "bullets": [
-                    "Rotación de stocks baja y NOFS/Ventas alta: ciclo más lento y mayor necesidad de financiación del circulante.",
-                    "Productividad VA/pax más baja del clúster; desempeño comercial intermedio.",
-                    "Inmovilizado/empleado intermedio: no compensa la rigidez con productividad.",
-                ],
-                "implicaciones": [
-                    "Prioridad: gestión del circulante y rotación (stock, cobros, plazos) para reducir tensión financiera.",
-                    "Plan de eficiencia/productividad (procesos, control de costes/tiempos) para estabilizar resultados.",
-                ],
-            },
+    # Subgrupos SOLO C1
+    SUBGROUP_STORY_C1 = {
+        "1.0": {
+            "titulo": "C1.1: capital-intensivo y productivo",
+            "rasgos_estructurales": [
+                "Inmovilizado/empleado: el más alto del subgrupo.",
+                "Productividad VA/pax: la más alta del subgrupo.",
+                "Rotación de stocks: intermedia.",
+            ],
+            "rasgos_economicos": [],
+            "lectura_economica": [
+                "Perfil basado en estructura/capacidad y productividad, más que en velocidad comercial.",
+                "Modelo con mayor rigidez operativa (costes fijos/activos) si cae la demanda.",
+            ],
+            "implicaciones": [
+                "Asegurar utilización eficiente de capacidad y disciplina de inversión.",
+                "Mejoras de eficiencia operativa para sostener productividad.",
+            ],
         },
-
-        "C2": {
-            "1.0": {
-                "titulo": "Subgrupo 1 (C2.1): muy rentable y comercial, pero más exigente en circulante",
-                "bullets": [
-                    "Ventas/pax y margen más altos del clúster: foco en rendimiento comercial y rentabilidad.",
-                    "NOFS/Ventas alto y rotación de stocks más baja dentro de C2: modelo menos “ligero” en circulante.",
-                    "Productividad VA/pax e inmovilizado/empleado intermedios: no es el más capital-intensivo de C2.",
-                ],
-                "implicaciones": [
-                    "Mejora clara en rotación y circulante: liberar caja sin perder margen.",
-                    "Revisar inventarios y condiciones con clientes/proveedores para sostener escalabilidad.",
-                ],
-            },
-            "2.0": {
-                "titulo": "Subgrupo 2 (C2.2): capital-intensivo y muy eficiente (perfil industrial/tecnológico)",
-                "bullets": [
-                    "Mayor rotación de stocks y mayor productividad VA/pax: eficiencia operativa con alta generación de valor.",
-                    "Inmovilizado/empleado alto: inversión/capacidad productiva relevante.",
-                    "NOFS/Ventas bajo: circulante muy bien controlado pese a la intensidad de activos.",
-                ],
-                "implicaciones": [
-                    "Modelo robusto: sostener ventaja con inversión selectiva y excelencia operativa.",
-                    "Evitar complejidad improductiva y cuidar mantenimiento/renovación de activos.",
-                ],
-            },
-            "3.0": {
-                "titulo": "Subgrupo 3 (C2.3): el C2 más templado (menor diferencial)",
-                "bullets": [
-                    "Ventas/pax, margen, VA/pax e inmovilizado/empleado más bajos dentro de C2: pierde parte del diferencial del clúster líder.",
-                    "Rotación de stocks y NOFS/Ventas intermedios: sin extremos claros.",
-                    "Sigue siendo un modelo sólido, pero con menor intensidad de ventaja competitiva.",
-                ],
-                "implicaciones": [
-                    "Oportunidad: converger a C2.2 (eficiencia/VA) o C2.1 (margen/ventas) según palancas internas.",
-                    "Revisar procesos y estructura de costes para recuperar diferencial.",
-                ],
-            },
+        "2.0": {
+            "titulo": "C1.2: ligero pero menos eficiente",
+            "rasgos_estructurales": [
+                "Rotación de stocks: la más baja del subgrupo.",
+                "Productividad VA/pax: la más baja del subgrupo.",
+                "Inmovilizado/empleado: el más bajo del subgrupo.",
+            ],
+            "rasgos_economicos": [],
+            "lectura_economica": [
+                "Perfil con menos estructura y también menor capacidad de convertir en valor.",
+                "Potencialmente el subgrupo más vulnerable dentro de C1.",
+            ],
+            "implicaciones": [
+                "Prioridad: elevar productividad (procesos/organización/mix) y eficiencia.",
+                "Revisar disciplina de circulante y costes si los resultados acompañan este perfil.",
+            ],
         },
-
-        "C3": {
-            "1.0": {
-                "titulo": "Subgrupo 1 (C3.1): el C3 más “premium” (margen y productividad altos)",
-                "bullets": [
-                    "Ventas/pax, margen y VA/pax altos: mejor combinación de productividad y rentabilidad dentro de C3.",
-                    "Inmovilizado/empleado alto: cierta estructura/capacidad que se está aprovechando bien.",
-                    "Rotación y NOFS/Ventas intermedios: equilibrio entre agilidad y control.",
-                ],
-                "implicaciones": [
-                    "Buen punto de partida para crecer: profesionalizar y escalar sin perder margen.",
-                    "Mantener disciplina operativa para que el aumento de estructura no reduzca agilidad.",
-                ],
-            },
-            "2.0": {
-                "titulo": "Subgrupo 2 (C3.2): el más ágil (máxima rotación y circulante ligero), con margen más ajustado",
-                "bullets": [
-                    "Rotación de stocks más alta y NOFS/Ventas más bajo: máxima agilidad y menor necesidad de financiar el circulante.",
-                    "Margen más bajo del clúster: compite por velocidad/volumen más que por rentabilidad unitaria.",
-                    "Estructura ligera (inmovilizado/empleado bajo) con productividades intermedias.",
-                ],
-                "implicaciones": [
-                    "Palanca clave: mejorar margen (pricing/mix/eficiencia) manteniendo la rotación.",
-                    "Vigilar sensibilidad a caídas de demanda: necesita volumen para sostener resultados.",
-                ],
-            },
-            "3.0": {
-                "titulo": "Subgrupo 3 (C3.3): pequeño y más tensionado (baja rotación, alto NOFS/Ventas)",
-                "bullets": [
-                    "Rotación de stocks baja y NOFS/Ventas alto: pierde parte de la agilidad típica de C3 y requiere más financiación del circulante.",
-                    "Ventas/pax y VA/pax bajos: menor productividad.",
-                    "Margen intermedio e inmovilizado/empleado intermedio: no compensa con rentabilidad.",
-                ],
-                "implicaciones": [
-                    "Prioridad: recuperar agilidad (rotación/circulante) y elevar productividad para estabilizar el modelo.",
-                    "Al ser un subgrupo pequeño, revisar posibles casos atípicos o condicionantes sectoriales.",
-                ],
-            },
+        "3.0": {
+            "titulo": "C1.3: ágil en rotación, productividad intermedia",
+            "rasgos_estructurales": [
+                "Rotación de stocks: la más alta del subgrupo.",
+                "Productividad VA/pax: intermedia.",
+                "Inmovilizado/empleado: intermedio.",
+            ],
+            "rasgos_economicos": [],
+            "lectura_economica": [
+                "Perfil que compite más por agilidad/ejecución que por intensidad de capital.",
+                "Puede escalar si convierte rotación en margen y eficiencia.",
+            ],
+            "implicaciones": [
+                "Palanca clave: mejorar margen/eficiencia sin perder rotación.",
+                "Vigilar sensibilidad a caídas de volumen (necesita mantener rotación).",
+            ],
         },
     }
 
-    # story principal (cluster)
+    # Story principal (cluster general)
     story = CLUSTER_STORY.get(
         str(cluster_sel),
         {
             "titulo": "Interpretación no definida",
-            "bullets": ["Define aquí el texto del clúster para tu memoria/defensa."],
-            "implicaciones": ["Añade recomendaciones específicas por clúster."],
+            "rasgos_estructurales": ["Define aquí el texto del clúster."],
+            "rasgos_economicos": [],
+            "lectura_economica": [],
+            "implicaciones": [],
         },
     )
 
-    # story del subgrupo (si existe)
-    sub_story = None
-    if subgroup_sel is not None and str(cluster_sel) in SUBGROUP_STORY:
-        sub_story = SUBGROUP_STORY[str(cluster_sel)].get(str(subgroup_sel), None)
+    # Subgrupos: SOLO para C1 y solo si subgroup_sel es válido
+    show_subgroups_c1 = (
+        (cluster_sel == "C1")
+        and (subgroup_col is not None)
+        and (subgroup_sel in {"1.0", "2.0", "3.0"})
+    )
 
-    # ======================
-    # (a partir de aquí, tu render sigue igual)
-    # Solo recuerda que ahora tienes:
-    #   - cluster_sel (normalizado a C1/C2/C3 si venía 1.0/2.0/3.0)
-    #   - subgroup_col (nombre columna subgrupo o None)
-    #   - subgroup_sel (valor subgrupo: "1.0"/"2.0"/"3.0" o None)
-    #   - story (texto cluster)
-    #   - sub_story (texto subgrupo o None)
-    # ======================
+    sub_story = SUBGROUP_STORY_C1.get(subgroup_sel) if show_subgroups_c1 else None
+    if show_subgroups_c1:
+        sub_story = SUBGROUP_STORY_C1.get(
+            str(subgroup_sel),
+            {
+                "titulo": "Interpretación de subgrupo no definida",
+                "rasgos_estructurales": ["No hay texto para este subgrupo."],
+                "rasgos_economicos": [],
+                "lectura_economica": [],
+                "implicaciones": [],
+            },
+        )
 
     # ======================
     # RADAR
@@ -526,10 +494,42 @@ def render_resumen(df: pd.DataFrame, comparar_con: str, zoom: bool, base_path: s
         st.divider()
         st.subheader("Interpretación del clúster")
         st.caption(f"Clúster: **{cluster_sel}** · n={n_sel} ({pct_sel:.1f}% de la muestra)")
-        st.markdown(f"**{story['titulo']}**")
-        st.markdown("- " + "\n- ".join(story["bullets"]))
+        st.markdown(f"**{story.get('titulo', '—')}**")
+
+        st.markdown("**Rasgos estructurales:**")
+        st.markdown("- " + "\n- ".join(story.get("rasgos_estructurales", [])))
+
+        st.markdown("**Rasgos económicos:**")
+        st.markdown("- " + "\n- ".join(story.get("rasgos_economicos", [])))
+
+        st.markdown("**Lectura económica:**")
+        st.markdown("- " + "\n- ".join(story.get("lectura_economica", [])))
+
         st.markdown("**Implicaciones prácticas:**")
-        st.markdown("- " + "\n- ".join(story["implicaciones"]))
+        st.markdown("- " + "\n- ".join(story.get("implicaciones", [])))
+
+        # ===== SUBGRUPOS: SOLO C1, y render DENTRO de la columna izquierda =====
+        if show_subgroups_c1 and sub_story is not None:
+            st.divider()
+            st.subheader("Interpretación del subgrupo (solo C1)")
+
+            pretty = {"1.0": "C1.1", "2.0": "C1.2", "3.0": "C1.3"}.get(str(subgroup_sel), str(subgroup_sel))
+            st.caption(f"Subgrupo: **{pretty}** · columna={subgroup_col}")
+
+            st.markdown(f"**{sub_story.get('titulo', '—')}**")
+
+            st.markdown("**Rasgos estructurales:**")
+            st.markdown("- " + "\n- ".join(sub_story.get("rasgos_estructurales", [])))
+
+            if sub_story.get("rasgos_economicos"):
+                st.markdown("**Rasgos económicos:**")
+                st.markdown("- " + "\n- ".join(sub_story.get("rasgos_economicos", [])))
+
+            st.markdown("**Lectura económica:**")
+            st.markdown("- " + "\n- ".join(sub_story.get("lectura_economica", [])))
+
+            st.markdown("**Implicaciones prácticas:**")
+            st.markdown("- " + "\n- ".join(sub_story.get("implicaciones", [])))
 
         st.markdown('<div id="perfil-radar"></div>', unsafe_allow_html=True)
         st.divider()
