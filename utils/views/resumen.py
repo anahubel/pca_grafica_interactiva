@@ -459,20 +459,36 @@ def render_resumen(
         if ("PC1" not in df.columns) or ("PC2" not in df.columns) or ("PC1" not in row.index) or ("PC2" not in row.index):
             st.warning("No puedo mostrar el gráfico PCA: faltan columnas PC1 y/o PC2 en el dataset cargado.")
         else:
+            COLOR_MAP = {
+            "C1": "#1f3b73",   # azul oscuro
+            "C2": "#d97706",   # naranja fuerte
+            "C3": "#15803d",   # verde intenso
+            "1.0": "#1f3b73",
+            "2.0": "#d97706",
+            "3.0": "#15803d",
+        }
+
+            
             fig = px.scatter(
                 df,
                 x="PC1",
                 y="PC2",
                 color="cluster_label" if "cluster_label" in df.columns else None,
                 hover_name="nombre" if "nombre" in df.columns else None,
-                opacity=0.65,
+                opacity=0.75,
+                color_discrete_map=COLOR_MAP,
                 labels={
                     "PC1": "Componente principal 1",
                     "PC2": "Componente principal 2",
                     "cluster_label": "Modelo de negocio",
                 },
             )
-            fig.update_traces(marker=dict(size=7))
+            fig.update_traces(
+                marker=dict(
+                    size=8,
+                    line=dict(width=0.5, color="white")
+                )
+            )
             fig.update_layout(legend=dict(orientation="h", y=-0.2))
 
             fig.add_trace(
