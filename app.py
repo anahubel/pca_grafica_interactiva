@@ -1,12 +1,10 @@
 # app.py
-import os
 import streamlit as st
 import pandas as pd
 import plotly.io as pio
 
 from utils.config import DATA_PATH, BASE_PATH
-from utils.data_io import load_data
-from utils.data_io import load_base_with_clusters
+from utils.data_io import load_app_dataset, load_base_with_clusters
 
 from utils.views.resumen import render_resumen
 from utils.views.estadistica import render_estadistica
@@ -24,7 +22,6 @@ def apply_brand_css(path: str = "assets/brand.css") -> None:
         with open(path, "r", encoding="utf-8") as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
     except FileNotFoundError:
-        # no paramos la app por esto
         pass
 
 
@@ -85,10 +82,13 @@ vista = st.radio(
 )
 
 # ----------------------
-# Carga DF principal
+# Carga DF principal (cached por mtime)
 # ----------------------
-DATA_MTIME = os.path.getmtime(DATA_PATH) if os.path.exists(DATA_PATH) else 0.0
-df = load_data(DATA_PATH, DATA_MTIME)
+try:
+    df = load_app_dataset(DATA_PATH)
+except Exception as e:
+    st.error(f"No pude cargar DATA_PATH={DATA_PATH}. Error: {e}")
+    st.stop()
 
 required_cols = ["PC1", "PC2", "cluster_label", "nombre"]
 missing_required = [c for c in required_cols if c not in df.columns]
@@ -97,17 +97,16 @@ if missing_required:
     st.stop()
 
 # ----------------------
-# Carga base completa (si la necesitas en vistas)
+# (Opcional) Carga base completa (cached por mtime)
+# OJO: no la guardes en session_state; deja que el cache haga su trabajo
 # ----------------------
-if "df_base_full" not in st.session_state:
-    try:
-        df_full = load_base_with_clusters(base_path=BASE_PATH, df_app=df)
-        if not isinstance(df_full, pd.DataFrame):
-            raise TypeError(f"load_base_with_clusters no devolvió DataFrame (devolvió: {type(df_full)})")
-        st.session_state["df_base_full"] = df_full
-    except Exception as e:
-        st.session_state["df_base_full"] = None
-        st.error(f"No pude cargar la base completa desde BASE_PATH: {e}")
+df_full: pd.DataFrame | None = None
+try:
+    df_full = load_base_with_clusters(base_path=BASE_PATH, df_app=df)
+except Exception as e:
+    # No paramos la app: hay vistas que no la necesitan
+    df_full = None
+    st.warning(f"No pude cargar la base completa desde BASE_PATH (se seguirá sin ella): {e}")
 
 with st.sidebar:
     st.header("Controles")
@@ -115,7 +114,12 @@ with st.sidebar:
     comparar_con = st.radio("Comparar contra", ["Solo su cluster", "Total (todas)"], index=0)
     zoom = st.checkbox("Zoom al punto seleccionado", value=False)
 
-    # Índice: SOLO para las vistas que tienen anclas (incluimos Sector textil si replica subgrupos)
+    # Botón útil cuando estás desarrollando (evita “no se actualiza”)
+    if st.button("🔄 Forzar recarga (limpiar caché)", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+    # Índice: SOLO para las vistas que tienen anclas
     if vista in ["Resumen", "Subgrupos C1", "Sector textil"]:
         st.markdown("### Índice")
         st.markdown(
@@ -141,7 +145,6 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-
 # ----------------------
 # Routing
 # ----------------------
@@ -161,4 +164,4 @@ elif vista == "Sector textil":
     render_cluster_textil(df=df, base_path=BASE_PATH, comparar_con=comparar_con, zoom=zoom, k=3)
 
 elif vista == "Cuartiles":
-    render_cuartiles(df) 
+    render_cuartiles(df)
