@@ -209,6 +209,9 @@ def render_resumen(
 ):
     df = df.copy()
 
+    st.sidebar.error("🔥 CAMBIO NUEVO EN RESUMEN.PY — SI VES ESTO, ESTÁ ACTUALIZADO 🔥")
+    st.sidebar.write("Archivo:", __file__)
+
     # ======================
     # SELECTOR EMPRESA
     # ======================
