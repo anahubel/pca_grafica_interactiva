@@ -6,3 +6,4 @@ scikit-learn
 plotly
 duckdb
 fastparquet
+umap-learn
