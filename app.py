@@ -13,6 +13,7 @@ from utils.views.estadistica import render_estadistica
 from utils.views.arbol_decision import render_arbol_decision
 from utils.views.subgrupos import render_subgrupos
 from utils.views.cluster_textil import render_cluster_textil
+from utils.views.cuartiles import render_cuartiles
 
 
 # ============================================================
@@ -77,6 +78,7 @@ vista = st.radio(
         "Árbol de decisión",
         "Subgrupos C1",
         "Sector textil",
+        "Cuartiles",
     ],
     horizontal=True,
     label_visibility="collapsed",
@@ -156,4 +158,7 @@ elif vista == "Subgrupos C1":
     render_subgrupos(df=df, base_path=BASE_PATH, cluster_general="C1", k=3, comparar_con=comparar_con, zoom=zoom)
 
 elif vista == "Sector textil":
-    render_cluster_textil(df=df, base_path=BASE_PATH, comparar_con=comparar_con, zoom=zoom)
+    render_cluster_textil(df=df, base_path=BASE_PATH, comparar_con=comparar_con, zoom=zoom, k=3)
+
+elif vista == "Cuartiles":
+    render_cuartiles(df) 
