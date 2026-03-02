@@ -848,3 +848,64 @@ def render_resumen(
         file_name=f"datos_referencia_{'cluster' if comparar_con == 'Solo su cluster' else 'total'}.csv",
         mime="text/csv",
     )
+
+    # ======================
+    # DESCARGAS (extra: base completa por cluster)
+    # ======================
+    st.divider()
+    st.subheader("Descargas — base completa por clúster")
+
+    # Base válida: complete cases en VARS_CLUSTER + cluster_label informado
+    cols_needed = [c for c in ["nombre", "codigo_nif", "cluster_label"] if c in df.columns]
+    if "cluster_label" not in df.columns:
+        st.warning("No puedo crear la descarga por clúster: falta `cluster_label`.")
+    else:
+        vars_ok = [v for v in VARS_CLUSTER if v in df.columns]
+        if len(vars_ok) == 0:
+            st.warning("No puedo crear la descarga por clúster: no encuentro `VARS_CLUSTER` en el dataset.")
+        else:
+            df_full_valid = df.dropna(subset=vars_ok + ["cluster_label"]).copy()
+
+            # Si quieres asegurar nombre/codigo_nif, descomenta:
+            # if "nombre" in df_full_valid.columns:
+            #     df_full_valid = df_full_valid[df_full_valid["nombre"].notna()].copy()
+            # if "codigo_nif" in df_full_valid.columns:
+            #     df_full_valid = df_full_valid[df_full_valid["codigo_nif"].notna()].copy()
+
+            # Construimos el dataframe mínimo a exportar
+            export_cols = [c for c in ["nombre", "codigo_nif", "cluster_label"] if c in df_full_valid.columns]
+            df_export_base = df_full_valid[export_cols].copy()
+
+            st.caption(
+                f"Casos válidos (complete cases en VARS_CLUSTER): n={len(df_export_base)}"
+            )
+
+            def _download_df(_df: pd.DataFrame, fname: str, label: str):
+                buf = io.StringIO()
+                _df.to_csv(buf, index=False)
+                st.download_button(
+                    label=label,
+                    data=buf.getvalue().encode("utf-8"),
+                    file_name=fname,
+                    mime="text/csv",
+                )
+
+            cA, cB, cC, cD = st.columns(4)
+
+            with cA:
+                _download_df(
+                    df_export_base,
+                    "base_completa_clusters_total.csv",
+                    "⬇️ Total (CSV)",
+                )
+
+            # OJO: aquí asumo cluster_label = "C1"/"C2"/"C3" (como tu modelo general)
+            for cl, col in [("C1", cB), ("C2", cC), ("C3", cD)]:
+                with col:
+                    df_cl = df_export_base[df_full_valid["cluster_label"].astype(str) == cl].copy()
+                    _download_df(
+                        df_cl,
+                        f"base_completa_clusters_{cl}.csv",
+                        f"⬇️ {cl} (CSV)",
+                    )
+    )
