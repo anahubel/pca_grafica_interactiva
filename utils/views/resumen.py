@@ -8,10 +8,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from sklearn.preprocessing import StandardScaler
+
 from utils.config import VARS_CLUSTER, LABELS, DATA_PATH
 from utils.fmt import to_display_scale, fmt_num
-
-from sklearn.preprocessing import StandardScaler
+from utils.ui import plotly_layout_base, anchor
 
 
 # ============================================================
@@ -32,7 +33,6 @@ def _read_any(path: str) -> pd.DataFrame | None:
 
 
 def _list_candidate_files(root: str) -> list[str]:
-    """Devuelve archivos candidatos (parquet/csv/xlsx/xls) bajo root (si root es carpeta) o root si es fichero."""
     if not root:
         return []
     if os.path.isfile(root):
@@ -48,13 +48,6 @@ def _list_candidate_files(root: str) -> list[str]:
 
 @st.cache_data(show_spinner=False)
 def _find_base_with_ingresos(base_path: str | None) -> tuple[pd.DataFrame | None, str | None]:
-    """
-    Busca una base que contenga ingresos_de_explotacion, en este orden:
-      1) base_path (si es fichero o carpeta)
-      2) carpeta de DATA_PATH
-      3) carpeta de base_path (si era fichero)
-      4) carpeta ./data (si existe)
-    """
     search_roots: list[str] = []
 
     if base_path:
@@ -96,10 +89,6 @@ def _find_base_with_ingresos(base_path: str | None) -> tuple[pd.DataFrame | None
 
 
 def _ensure_ingresos(df_view: pd.DataFrame, base_path: str | None, diagnostic: bool = False) -> pd.DataFrame:
-    """
-    Garantiza que df_view tenga ingresos_de_explotacion.
-    Si no, busca una base con ingresos y hace merge por codigo_nif o nombre.
-    """
     if "ingresos_de_explotacion" in df_view.columns:
         return df_view
 
@@ -146,13 +135,6 @@ def _compute_umap_embedding(
     metric: str = "euclidean",
     random_state: int = 42,
 ) -> pd.DataFrame:
-    """
-    Calcula UMAP sobre vars_model (escalado) y devuelve un DF con:
-      - __umap1, __umap2
-      - cluster_label (si existe)
-      - nombre, codigo_nif (si existen)
-    Solo usa complete cases en vars_model.
-    """
     try:
         import umap  # umap-learn
     except Exception as e:
@@ -168,12 +150,10 @@ def _compute_umap_embedding(
 
     X = df[vars_ok].apply(pd.to_numeric, errors="coerce")
     mask = X.notna().all(axis=1)
-
     if mask.sum() < 10:
         return pd.DataFrame()
 
     X2 = X.loc[mask].to_numpy()
-
     scaler = StandardScaler(with_mean=True, with_std=True)
     Xs = scaler.fit_transform(X2)
 
@@ -192,6 +172,37 @@ def _compute_umap_embedding(
 
     keep = [c for c in ["__umap1", "__umap2", "cluster_label", "nombre", "codigo_nif"] if c in out.columns]
     return out[keep].copy()
+
+
+# ============================================================
+# Helpers UI / hover
+# ============================================================
+def _normalize_cluster_label(x) -> str:
+    m = {"1": "C1", "1.0": "C1", "2": "C2", "2.0": "C2", "3": "C3", "3.0": "C3"}
+    s = str(x).strip()
+    return m.get(s, s)
+
+
+def _hovertemplate_basic() -> str:
+    # Usaremos customdata = [nombre, nif, cluster]
+    return (
+        "<b>%{customdata[0]}</b>"
+        "<br>NIF: %{customdata[1]}"
+        "<br>Clúster: %{customdata[2]}"
+        "<extra></extra>"
+    )
+
+
+def _customdata(df_: pd.DataFrame) -> np.ndarray:
+    nombre = df_["nombre"].astype(str) if "nombre" in df_.columns else pd.Series(["—"] * len(df_))
+    nif = df_["codigo_nif"].astype(str) if "codigo_nif" in df_.columns else pd.Series(["—"] * len(df_))
+    cl = df_["cluster_label"].astype(str) if "cluster_label" in df_.columns else pd.Series(["—"] * len(df_))
+    return np.stack([nombre.to_numpy(), nif.to_numpy(), cl.to_numpy()], axis=1)
+
+
+def _selected_marker_style(color_hex: str) -> dict:
+    # marcador “integrado”: mismo color del cluster, con borde para resaltar
+    return dict(size=16, symbol="circle", color=color_hex, line=dict(width=3, color="white"))
 
 
 # ============================================================
@@ -225,11 +236,7 @@ def render_resumen(
     # Normaliza cluster_label
     # ======================
     _raw_cluster = row.get("cluster_label", "—")
-    if normalize_cluster_labels:
-        _cluster_map = {"1": "C1", "1.0": "C1", "2": "C2", "2.0": "C2", "3": "C3", "3.0": "C3"}
-        cluster_sel = _cluster_map.get(str(_raw_cluster).strip(), str(_raw_cluster).strip())
-    else:
-        cluster_sel = str(_raw_cluster).strip()
+    cluster_sel = _normalize_cluster_label(_raw_cluster) if normalize_cluster_labels else str(_raw_cluster).strip()
 
     # ======================
     # Referencia (cluster o total)
@@ -237,7 +244,7 @@ def render_resumen(
     if comparar_con == "Solo su cluster" and "cluster_label" in df.columns and "cluster_label" in row.index:
         df_ref = df[df["cluster_label"] == _raw_cluster].copy()
         if df_ref.empty and cluster_sel in {"C1", "C2", "C3"}:
-            df_ref = df[df["cluster_label"] == cluster_sel].copy()
+            df_ref = df[df["cluster_label"].astype(str) == cluster_sel].copy()
     else:
         df_ref = df.copy()
 
@@ -246,7 +253,7 @@ def render_resumen(
     pct_sel = (n_sel / max(1, len(df))) * 100.0
 
     # ======================
-    # Textos: clúster general
+    # Story (igual que tenías)
     # ======================
     CLUSTER_STORY = {
         "C1": {
@@ -332,76 +339,7 @@ def render_resumen(
     )
 
     # ======================
-    # RADAR
-    # ======================
-    def make_radar(df_ref_: pd.DataFrame, row_: pd.Series) -> go.Figure:
-        categories: list[str] = []
-        empresa_vals: list[float] = []
-
-        for var in VARS_CLUSTER:
-            if var not in df_ref_.columns:
-                continue
-            s = pd.to_numeric(df_ref_[var], errors="coerce").dropna()
-            v = pd.to_numeric(row_.get(var, np.nan), errors="coerce")
-            if len(s) == 0 or pd.isna(v):
-                continue
-
-            v_disp = float(to_display_scale(var, pd.Series([v])).iloc[0])
-            categories.append(LABELS.get(var, var))
-            empresa_vals.append(v_disp)
-
-        if len(categories) < 3:
-            fig0 = go.Figure()
-            fig0.update_layout(height=340, margin=dict(l=30, r=30, t=30, b=30), title="Radar (perfil de la empresa)")
-            return fig0
-
-        emp_norm: list[float] = []
-        vars_in = [v for v in VARS_CLUSTER if LABELS.get(v, v) in categories]
-
-        for i, var in enumerate(vars_in):
-            s = pd.to_numeric(df_ref_[var], errors="coerce").dropna()
-            if len(s) == 0:
-                continue
-            s_disp = to_display_scale(var, s)
-
-            q1 = float(s_disp.quantile(0.25))
-            q3 = float(s_disp.quantile(0.75))
-            iqr = (q3 - q1) if (q3 - q1) != 0 else 1e-9
-
-            e = (empresa_vals[i] - q1) / iqr
-            e = max(0.0, min(2.0, e)) / 2.0
-            emp_norm.append(e)
-
-        if len(emp_norm) != len(categories):
-            fig0 = go.Figure()
-            fig0.update_layout(height=340, margin=dict(l=30, r=30, t=30, b=30), title="Radar (perfil de la empresa)")
-            return fig0
-
-        categories_closed = categories + [categories[0]]
-        emp_closed = emp_norm + [emp_norm[0]]
-
-        fig1 = go.Figure()
-        fig1.add_trace(
-            go.Scatterpolar(
-                r=emp_closed,
-                theta=categories_closed,
-                fill="toself",
-                name="Empresa",
-                opacity=0.6,
-                hovertemplate="%{theta}: %{r:.0%}<extra></extra>",
-            )
-        )
-        fig1.update_layout(
-            height=420,
-            margin=dict(l=30, r=30, t=50, b=30),
-            polar=dict(radialaxis=dict(visible=True, range=[0, 1], tickformat=".0%")),
-            showlegend=False,
-            title="Radar — perfil de la empresa (normalizado por IQR)",
-        )
-        return fig1
-
-    # ======================
-    # FUNCIONES: percentil + score global
+    # Funciones: percentil + score global
     # ======================
     def empirical_percentile(s: pd.Series, x: float) -> float:
         s = pd.to_numeric(s, errors="coerce").dropna()
@@ -409,12 +347,12 @@ def render_resumen(
             return np.nan
         return float((s <= x).mean() * 100.0)
 
-    def robust_score_iqr(s_disp: pd.Series, x_disp: float) -> float:
+    def robust_z_iqr(s_disp: pd.Series, x_disp: float) -> float:
         s_disp = pd.to_numeric(s_disp, errors="coerce").dropna()
         if len(s_disp) == 0 or pd.isna(x_disp):
             return np.nan
-        q1 = float(s_disp.quantile(0.25))
         med = float(s_disp.quantile(0.50))
+        q1 = float(s_disp.quantile(0.25))
         q3 = float(s_disp.quantile(0.75))
         iqr = (q3 - q1) if (q3 - q1) != 0 else 1e-9
         z = (float(x_disp) - med) / iqr
@@ -433,58 +371,67 @@ def render_resumen(
     # ======================
     left, right = st.columns([2.2, 1.3], gap="large")
 
+    # ============================================================
+    # LEFT
+    # ============================================================
     with left:
-        st.markdown('<div id="pca"></div>', unsafe_allow_html=True)
+        anchor("pca")
 
         # ======================
-        # PCA
+        # PCA (hover consistente + sin streamlitApp)
         # ======================
-        if ("PC1" not in df.columns) or ("PC2" not in df.columns) or ("PC1" not in row.index) or ("PC2" not in row.index):
-            st.warning("No puedo mostrar el gráfico PCA: faltan columnas PC1 y/o PC2.")
-        else:
-            COLOR_MAP_PCA = {
-                "C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d",
-                "1.0": "#1f3b73", "2.0": "#d97706", "3.0": "#15803d",
-                "1": "#1f3b73", "2": "#d97706", "3": "#15803d",
-            }
+        with st.expander("PCA", expanded=True):
+            if ("PC1" not in df.columns) or ("PC2" not in df.columns) or ("PC1" not in row.index) or ("PC2" not in row.index):
+                st.warning("No puedo mostrar el gráfico PCA: faltan columnas PC1 y/o PC2.")
+            else:
+                color_map = {"C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d", "1": "#1f3b73", "2": "#d97706", "3": "#15803d", "1.0": "#1f3b73", "2.0": "#d97706", "3.0": "#15803d"}
 
-            fig = px.scatter(
-                df,
-                x="PC1",
-                y="PC2",
-                color="cluster_label" if "cluster_label" in df.columns else None,
-                hover_name="nombre" if "nombre" in df.columns else None,
-                opacity=0.75,
-                color_discrete_map=COLOR_MAP_PCA,
-                labels={"PC1": "Componente principal 1", "PC2": "Componente principal 2", "cluster_label": "Modelo de negocio"},
-            )
-            fig.update_traces(marker=dict(size=8, line=dict(width=0.5, color="white")))
-            fig.update_layout(legend=dict(orientation="h", y=-0.2))
+                df_plot = df.copy()
+                if "cluster_label" in df_plot.columns:
+                    df_plot["cluster_label"] = df_plot["cluster_label"].astype(str).map(_normalize_cluster_label)
 
-            fig.add_trace(
-                go.Scatter(
-                    x=[row["PC1"]],
-                    y=[row["PC2"]],
-                    mode="markers",
-                    marker=dict(size=18, symbol="circle-open", line=dict(width=4)),
-                    showlegend=False,
+                fig = px.scatter(
+                    df_plot,
+                    x="PC1",
+                    y="PC2",
+                    color="cluster_label" if "cluster_label" in df_plot.columns else None,
+                    opacity=0.75,
+                    color_discrete_map=color_map,
+                    labels={"PC1": "Componente principal 1", "PC2": "Componente principal 2", "cluster_label": "Modelo de negocio"},
                 )
-            )
 
-            if zoom:
-                fig.update_xaxes(range=[row["PC1"] - 1.0, row["PC1"] + 1.0])
-                fig.update_yaxes(range=[row["PC2"] - 1.0, row["PC2"] + 1.0])
+                fig.update_traces(
+                    marker=dict(size=8, line=dict(width=0.5, color="white")),
+                    customdata=_customdata(df_plot),
+                    hovertemplate=_hovertemplate_basic(),
+                )
+                fig.update_layout(**plotly_layout_base(height=520))
+                fig.update_layout(legend=dict(orientation="h", y=-0.18))
 
-            st.plotly_chart(fig, use_container_width=True)
+                # Seleccionada (mismo color de cluster + borde)
+                sel_color = color_map.get(cluster_sel, "#111111")
+                fig.add_trace(
+                    go.Scatter(
+                        x=[float(row["PC1"])],
+                        y=[float(row["PC2"])],
+                        mode="markers",
+                        marker=_selected_marker_style(sel_color),
+                        showlegend=False,
+                        customdata=np.array([[str(row.get("nombre", "—")), str(row.get("codigo_nif", "—")), str(cluster_sel)]]),
+                        hovertemplate=_hovertemplate_basic(),
+                    )
+                )
+
+                if zoom:
+                    fig.update_xaxes(range=[float(row["PC1"]) - 1.0, float(row["PC1"]) + 1.0])
+                    fig.update_yaxes(range=[float(row["PC2"]) - 1.0, float(row["PC2"]) + 1.0])
+
+                st.plotly_chart(fig, use_container_width=True)
 
         # ======================
-        # UMAP
+        # UMAP (plegable)
         # ======================
-        st.divider()
-        st.subheader("UMAP — proyección no lineal (sobre variables del clustering)")
-
-        show_umap = st.checkbox("Mostrar UMAP", value=True)
-        if show_umap:
+        with st.expander("UMAP — proyección no lineal (sobre variables del clustering)", expanded=False):
             vars_model_umap = [v for v in VARS_CLUSTER if v in df.columns]
             if len(vars_model_umap) < 2:
                 st.warning("No puedo calcular UMAP: faltan variables de VARS_CLUSTER.")
@@ -512,240 +459,277 @@ def render_resumen(
                 if df_umap.empty:
                     st.warning("UMAP no disponible (muy pocos casos válidos o faltan datos).")
                 else:
-                    COLOR_MAP_UMAP = {
-                        "C1": "#6FA1D9", "C2": "#BC523B", "C3": "#2F475A",
-                        "1": "#6FA1D9", "2": "#BC523B", "3": "#2F475A",
-                        "1.0": "#6FA1D9", "2.0": "#BC523B", "3.0": "#2F475A",
-                    }
+                    df_umap = df_umap.copy()
+                    df_umap["cluster_label"] = df_umap["cluster_label"].astype(str).map(_normalize_cluster_label)
 
+                    color_map_umap = {"C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d"}
                     fig_u = px.scatter(
                         df_umap,
                         x="__umap1",
                         y="__umap2",
                         color="cluster_label",
-                        color_discrete_map=COLOR_MAP_UMAP,
-                        hover_name="nombre" if "nombre" in df_umap.columns else None,
                         opacity=0.85,
+                        color_discrete_map=color_map_umap,
                         labels={"__umap1": "UMAP 1", "__umap2": "UMAP 2", "cluster_label": "Modelo de negocio"},
                     )
-                    fig_u.update_traces(marker=dict(size=8, line=dict(width=0.5, color="white")))
-                    fig_u.update_layout(legend=dict(orientation="h", y=-0.2))
+                    fig_u.update_traces(
+                        marker=dict(size=8, line=dict(width=0.5, color="white")),
+                        customdata=_customdata(df_umap),
+                        hovertemplate=_hovertemplate_basic(),
+                    )
+                    fig_u.update_layout(**plotly_layout_base(height=520))
+                    fig_u.update_layout(legend=dict(orientation="h", y=-0.18))
 
-                    if "nombre" in df_umap.columns and row.get("nombre", None) is not None:
-                        nm = str(row.get("nombre"))
-                        sub = df_umap[df_umap["nombre"].astype(str) == nm]
-                        if len(sub) > 0:
-                            fig_u.add_trace(
-                                go.Scatter(
-                                    x=[sub.iloc[0]["__umap1"]],
-                                    y=[sub.iloc[0]["__umap2"]],
-                                    mode="markers",
-                                    marker=dict(size=18, symbol="circle-open", line=dict(width=4)),
-                                    showlegend=False,
-                                )
+                    # Seleccionada (si existe en df_umap por nombre/nif)
+                    sel_name = str(row.get("nombre", "")).strip()
+                    sel_nif = str(row.get("codigo_nif", "")).strip()
+
+                    sub = pd.DataFrame()
+                    if sel_nif and "codigo_nif" in df_umap.columns:
+                        sub = df_umap[df_umap["codigo_nif"].astype(str).str.strip() == sel_nif].copy()
+                    if sub.empty and sel_name and "nombre" in df_umap.columns:
+                        sub = df_umap[df_umap["nombre"].astype(str).str.strip() == sel_name].copy()
+
+                    if not sub.empty:
+                        sel_color = color_map_umap.get(cluster_sel, "#111111")
+                        fig_u.add_trace(
+                            go.Scatter(
+                                x=[float(sub.iloc[0]["__umap1"])],
+                                y=[float(sub.iloc[0]["__umap2"])],
+                                mode="markers",
+                                marker=_selected_marker_style(sel_color),
+                                showlegend=False,
+                                customdata=np.array([[sel_name or "—", sel_nif or "—", str(cluster_sel)]]),
+                                hovertemplate=_hovertemplate_basic(),
                             )
+                        )
 
                     st.plotly_chart(fig_u, use_container_width=True)
                     st.caption("UMAP conserva vecindarios locales, pero las distancias globales no son directamente comparables.")
 
-        # =========================
-        # 3D (espacio REAL del clustering) — MEJORADO
-        # =========================
-        st.divider()
-        st.subheader("3D — espacio del clustering (variables escaladas)")
-
-        vars_model_3d = [v for v in ["rotacion_stocks", "productividad_va_pax", "inmovilizado_empleado"] if v in df.columns]
-
-        if len(vars_model_3d) < 3:
-            st.warning("No puedo mostrar 3D: necesito rotacion_stocks, productividad_va_pax e inmovilizado_empleado.")
-        else:
-            # Controles de visual
-            cA, cB, cC, cD = st.columns([1.2, 1.2, 1.2, 1.4])
-            with cA:
-                rest_opacity = st.slider("Opacidad resto", 0.05, 0.90, 0.35, 0.05)
-            with cB:
-                rest_size = st.slider("Tamaño resto", 2.0, 8.0, 4.0, 0.5)
-            with cC:
-                sel_size = st.slider("Tamaño seleccionada", 4.0, 14.0, 7.0, 0.5)
-            with cD:
-                show_selected = st.checkbox("Mostrar empresa seleccionada", value=True)
-
-            cE, cF, cG = st.columns([1.2, 1.2, 1.6])
-            with cE:
-                show_halo = st.checkbox("Halo (ayuda a localizar)", value=True)
-            with cF:
-                halo_size = st.slider("Tamaño halo", 10.0, 30.0, 16.0, 1.0)
-            with cG:
-                zoom_3d = st.checkbox("Zoom 3D a la seleccionada", value=False)
-
-            zoom_radius = st.slider("Radio zoom (z-score)", 0.5, 4.0, 2.2, 0.1) if zoom_3d else None
-
-            # 1) DF completo-case
-            df_3d = df.copy()
-            for v in vars_model_3d:
-                df_3d[v] = pd.to_numeric(df_3d[v], errors="coerce")
-
-            need_cols = vars_model_3d + (["cluster_label"] if "cluster_label" in df_3d.columns else [])
-            df_3d = df_3d.dropna(subset=need_cols).copy()
-
-            if df_3d.empty:
-                st.warning("No hay casos completos para construir el 3D.")
+        # ======================
+        # 3D (plegable + integrado + con/sin seleccionada)
+        # ======================
+        with st.expander("3D — espacio del clustering (variables escaladas)", expanded=False):
+            vars_model_3d = [v for v in ["rotacion_stocks", "productividad_va_pax", "inmovilizado_empleado"] if v in df.columns]
+            if len(vars_model_3d) < 3:
+                st.warning("No puedo mostrar 3D: necesito rotacion_stocks, productividad_va_pax e inmovilizado_empleado.")
             else:
-                # 2) Escalado
-                scaler = StandardScaler(with_mean=True, with_std=True)
-                Xs = scaler.fit_transform(df_3d[vars_model_3d].to_numpy())
+                cA, cB, cC, cD = st.columns([1.0, 1.0, 1.0, 1.2])
+                with cA:
+                    rest_opacity = st.slider("Opacidad resto", 0.05, 0.90, 0.35, 0.05)
+                with cB:
+                    rest_size = st.slider("Tamaño resto", 2.0, 8.0, 4.0, 0.5)
+                with cC:
+                    sel_size = st.slider("Tamaño seleccionada", 4.0, 16.0, 10.0, 0.5)
+                with cD:
+                    show_selected = st.checkbox("Mostrar empresa seleccionada", value=True)
 
-                df_3d["__z1"] = Xs[:, 0]
-                df_3d["__z2"] = Xs[:, 1]
-                df_3d["__z3"] = Xs[:, 2]
+                zoom_3d = st.checkbox("Zoom 3D a la seleccionada", value=False)
+                zoom_radius = st.slider("Radio zoom (z-score)", 0.5, 4.0, 2.2, 0.1) if zoom_3d else None
 
-                # 3) localizar empresa seleccionada dentro de df_3d
-                sel_nombre = str(row.get("nombre", "")).strip()
-                sel_nif = str(row.get("codigo_nif", "")).strip()
+                df_3d = df.copy()
+                for v in vars_model_3d:
+                    df_3d[v] = pd.to_numeric(df_3d[v], errors="coerce")
+                df_3d["cluster_label"] = df_3d["cluster_label"].astype(str).map(_normalize_cluster_label)
 
-                df_sel = pd.DataFrame()
-                if sel_nif and "codigo_nif" in df_3d.columns:
-                    df_sel = df_3d[df_3d["codigo_nif"].astype(str).str.strip() == sel_nif].copy()
-                if df_sel.empty and sel_nombre and "nombre" in df_3d.columns:
-                    df_sel = df_3d[df_3d["nombre"].astype(str).str.strip() == sel_nombre].copy()
+                need_cols = vars_model_3d + ["cluster_label"]
+                df_3d = df_3d.dropna(subset=need_cols).copy()
+                if df_3d.empty:
+                    st.warning("No hay casos completos para construir el 3D.")
+                else:
+                    scaler = StandardScaler(with_mean=True, with_std=True)
+                    Xs = scaler.fit_transform(df_3d[vars_model_3d].to_numpy())
 
-                # 4) figura
-                COLOR_MAP = {
-                    "C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d",
-                    "1": "#1f3b73",  "2": "#d97706",  "3": "#15803d",
-                    "1.0": "#1f3b73","2.0": "#d97706","3.0": "#15803d",
-                }
+                    df_3d["__z1"] = Xs[:, 0]
+                    df_3d["__z2"] = Xs[:, 1]
+                    df_3d["__z3"] = Xs[:, 2]
 
-                fig3d = go.Figure()
+                    sel_name = str(row.get("nombre", "")).strip()
+                    sel_nif = str(row.get("codigo_nif", "")).strip()
 
-                # Resto (más visible, NO tan difuminado)
-                if "cluster_label" in df_3d.columns:
-                    for cl in sorted(df_3d["cluster_label"].dropna().astype(str).unique()):
+                    df_sel = pd.DataFrame()
+                    if sel_nif and "codigo_nif" in df_3d.columns:
+                        df_sel = df_3d[df_3d["codigo_nif"].astype(str).str.strip() == sel_nif].copy()
+                    if df_sel.empty and sel_name and "nombre" in df_3d.columns:
+                        df_sel = df_3d[df_3d["nombre"].astype(str).str.strip() == sel_name].copy()
+
+                    color_map_3d = {"C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d"}
+
+                    fig3d = go.Figure()
+
+                    for cl in ["C1", "C2", "C3"]:
                         dcl = df_3d[df_3d["cluster_label"].astype(str) == cl]
+                        if dcl.empty:
+                            continue
                         fig3d.add_trace(
                             go.Scatter3d(
-                                x=dcl["__z1"], y=dcl["__z2"], z=dcl["__z3"],
+                                x=dcl["__z1"],
+                                y=dcl["__z2"],
+                                z=dcl["__z3"],
                                 mode="markers",
-                                name=str(cl),
-                                marker=dict(
-                                    size=float(rest_size),
-                                    opacity=float(rest_opacity),
-                                    color=COLOR_MAP.get(str(cl), "#888888"),
-                                ),
-                                hovertext=dcl["nombre"] if "nombre" in dcl.columns else None,
-                                hovertemplate="%{hovertext}<extra></extra>" if "nombre" in dcl.columns else None,
+                                name=cl,
+                                marker=dict(size=float(rest_size), opacity=float(rest_opacity), color=color_map_3d.get(cl, "#888")),
+                                customdata=_customdata(dcl),
+                                hovertemplate=_hovertemplate_basic(),
                             )
                         )
-                else:
-                    fig3d.add_trace(
-                        go.Scatter3d(
-                            x=df_3d["__z1"], y=df_3d["__z2"], z=df_3d["__z3"],
-                            mode="markers",
-                            name="Empresas",
-                            marker=dict(size=float(rest_size), opacity=float(rest_opacity), color="#888888"),
-                        )
-                    )
 
-                # Seleccionada (integrada) + halo opcional
-                if show_selected:
-                    if not df_sel.empty:
-                        x0 = float(df_sel.iloc[0]["__z1"])
-                        y0 = float(df_sel.iloc[0]["__z2"])
-                        z0 = float(df_sel.iloc[0]["__z3"])
-                        nombre_sel = str(df_sel.iloc[0].get("nombre", "Seleccionada"))
+                    if show_selected:
+                        if not df_sel.empty:
+                            x0 = float(df_sel.iloc[0]["__z1"])
+                            y0 = float(df_sel.iloc[0]["__z2"])
+                            z0 = float(df_sel.iloc[0]["__z3"])
+                            sel_color = color_map_3d.get(cluster_sel, "#111111")
 
-                        if show_halo:
                             fig3d.add_trace(
                                 go.Scatter3d(
-                                    x=[x0], y=[y0], z=[z0],
+                                    x=[x0],
+                                    y=[y0],
+                                    z=[z0],
                                     mode="markers",
-                                    marker=dict(size=float(halo_size), color="white", opacity=0.70),
+                                    marker=dict(
+                                        size=float(sel_size),
+                                        color=sel_color,
+                                        opacity=1.0,
+                                        line=dict(width=4, color="white"),
+                                    ),
                                     showlegend=False,
-                                    hoverinfo="skip",
+                                    customdata=np.array([[sel_name or "—", sel_nif or "—", str(cluster_sel)]]),
+                                    hovertemplate=_hovertemplate_basic(),
                                 )
                             )
 
-                        # punto principal (más pequeño y "normal")
-                        fig3d.add_trace(
-                            go.Scatter3d(
-                                x=[x0], y=[y0], z=[z0],
-                                mode="markers",
-                                marker=dict(
-                                    size=float(sel_size),
-                                    color="#ff2d55",
-                                    opacity=1.0,
-                                    line=dict(width=1.5, color="black"),
-                                ),
-                                showlegend=False,
-                                hovertemplate=f"<b>{nombre_sel}</b><br>x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>z=%{{z:.2f}}<extra></extra>",
-                            )
-                        )
-
-                        if zoom_3d and zoom_radius is not None:
-                            fig3d.update_layout(
-                                scene=dict(
-                                    xaxis=dict(range=[x0 - zoom_radius, x0 + zoom_radius]),
-                                    yaxis=dict(range=[y0 - zoom_radius, y0 + zoom_radius]),
-                                    zaxis=dict(range=[z0 - zoom_radius, z0 + zoom_radius]),
+                            if zoom_3d and zoom_radius is not None:
+                                fig3d.update_layout(
+                                    scene=dict(
+                                        xaxis=dict(range=[x0 - zoom_radius, x0 + zoom_radius]),
+                                        yaxis=dict(range=[y0 - zoom_radius, y0 + zoom_radius]),
+                                        zaxis=dict(range=[z0 - zoom_radius, z0 + zoom_radius]),
+                                    )
                                 )
-                            )
-                    else:
-                        st.info("La empresa seleccionada no aparece en el 3D (tiene NaN en alguna de las 3 variables).")
+                        else:
+                            st.info("La empresa seleccionada no aparece en el 3D (NaN en alguna de las 3 variables).")
 
-                fig3d.update_layout(
-                    height=650,
-                    legend=dict(orientation="h", y=-0.12),
-                    scene=dict(
-                        xaxis_title=f"{LABELS.get(vars_model_3d[0], vars_model_3d[0])} (z)",
-                        yaxis_title=f"{LABELS.get(vars_model_3d[1], vars_model_3d[1])} (z)",
-                        zaxis_title=f"{LABELS.get(vars_model_3d[2], vars_model_3d[2])} (z)",
-                    ),
-                    scene_camera=dict(eye=dict(x=1.35, y=1.35, z=1.10)),
+                    fig3d.update_layout(
+                        **plotly_layout_base(height=720),
+                        legend=dict(orientation="h", y=-0.10),
+                        scene=dict(
+                            xaxis_title=f"{LABELS.get(vars_model_3d[0], vars_model_3d[0])} (z)",
+                            yaxis_title=f"{LABELS.get(vars_model_3d[1], vars_model_3d[1])} (z)",
+                            zaxis_title=f"{LABELS.get(vars_model_3d[2], vars_model_3d[2])} (z)",
+                        ),
+                        scene_camera=dict(eye=dict(x=1.35, y=1.35, z=1.10)),
+                    )
+                    st.plotly_chart(fig3d, use_container_width=True)
+
+        # ======================
+        # Interpretación (plegable)
+        # ======================
+        anchor("interpretacion")
+        with st.expander(story_title, expanded=True):
+            st.caption(f"Clúster: **{cluster_sel}** · n={n_sel} ({pct_sel:.1f}% de la muestra)")
+            st.markdown(f"**{story.get('titulo', '—')}**")
+
+            st.markdown("**Rasgos estructurales:**")
+            st.markdown("- " + "\n- ".join(story.get("rasgos_estructurales", [])))
+
+            st.markdown("**Rasgos económicos:**")
+            st.markdown("- " + "\n- ".join(story.get("rasgos_economicos", [])))
+
+            st.markdown("**Lectura económica:**")
+            st.markdown("- " + "\n- ".join(story.get("lectura_economica", [])))
+
+            st.markdown("**Implicaciones prácticas:**")
+            st.markdown("- " + "\n- ".join(story.get("implicaciones", [])))
+
+        # ======================
+        # Radar (plegable) — ARREGLADO
+        # ======================
+        anchor("perfil-radar")
+        with st.expander("Perfil (radar)", expanded=False):
+            # radar robusto: z_iqr clip [-2,2] -> [0,1]
+            cats = []
+            r_emp = []
+            r_ref = []
+
+            for var in VARS_CLUSTER:
+                if var not in df_ref.columns:
+                    continue
+
+                s_raw = pd.to_numeric(df_ref[var], errors="coerce").dropna()
+                v_raw = pd.to_numeric(row.get(var, np.nan), errors="coerce")
+                if len(s_raw) == 0 or pd.isna(v_raw):
+                    continue
+
+                s_disp = to_display_scale(var, s_raw)
+                v_disp = float(to_display_scale(var, pd.Series([v_raw])).iloc[0])
+
+                # empresa
+                z_emp = robust_z_iqr(s_disp, v_disp)
+                if pd.isna(z_emp):
+                    continue
+                emp01 = (z_emp + 2.0) / 4.0  # [-2,2] -> [0,1]
+
+                # referencia: mediana del grupo (z=0 => 0.5)
+                ref01 = 0.5
+
+                cats.append(LABELS.get(var, var))
+                r_emp.append(emp01)
+                r_ref.append(ref01)
+
+            if len(cats) < 3:
+                st.info("No hay suficientes variables válidas para el radar (necesito al menos 3).")
+            else:
+                cats_closed = cats + [cats[0]]
+                emp_closed = r_emp + [r_emp[0]]
+                ref_closed = r_ref + [r_ref[0]]
+
+                fig_r = go.Figure()
+                fig_r.add_trace(
+                    go.Scatterpolar(
+                        r=ref_closed,
+                        theta=cats_closed,
+                        mode="lines",
+                        line=dict(width=2),
+                        name="Referencia (mediana)",
+                        hovertemplate="%{theta}: mediana<extra></extra>",
+                    )
                 )
+                fig_r.add_trace(
+                    go.Scatterpolar(
+                        r=emp_closed,
+                        theta=cats_closed,
+                        fill="toself",
+                        opacity=0.55,
+                        name="Empresa",
+                        hovertemplate="%{theta}: %{r:.0%}<extra></extra>",
+                    )
+                )
+                fig_r.update_layout(
+                    **plotly_layout_base(height=520),
+                    polar=dict(radialaxis=dict(visible=True, range=[0, 1], tickformat=".0%")),
+                    legend=dict(orientation="h", y=-0.15),
+                    title="Radar — posición robusta (IQR) vs referencia",
+                    margin=dict(l=30, r=30, t=60, b=30),
+                )
+                st.plotly_chart(fig_r, use_container_width=True)
 
-                st.plotly_chart(fig3d, use_container_width=True)
-
-        # ======================
-        # Interpretación
-        # ======================
-        st.markdown('<div id="interpretacion"></div>', unsafe_allow_html=True)
-        st.divider()
-
-        st.subheader(story_title)
-        st.caption(f"Clúster: **{cluster_sel}** · n={n_sel} ({pct_sel:.1f}% de la muestra)")
-        st.markdown(f"**{story.get('titulo', '—')}**")
-
-        st.markdown("**Rasgos estructurales:**")
-        st.markdown("- " + "\n- ".join(story.get("rasgos_estructurales", [])))
-
-        st.markdown("**Rasgos económicos:**")
-        st.markdown("- " + "\n- ".join(story.get("rasgos_economicos", [])))
-
-        st.markdown("**Lectura económica:**")
-        st.markdown("- " + "\n- ".join(story.get("lectura_economica", [])))
-
-        st.markdown("**Implicaciones prácticas:**")
-        st.markdown("- " + "\n- ".join(story.get("implicaciones", [])))
-
-        st.markdown('<div id="perfil-radar"></div>', unsafe_allow_html=True)
-        st.divider()
-        st.subheader("Perfil (radar)")
-        radar_fig = make_radar(df_ref_=df_ref, row_=row)
-        st.plotly_chart(radar_fig, use_container_width=True)
-
+    # ============================================================
+    # RIGHT: indicadores (lo mantengo, pero compacto)
+    # ============================================================
     with right:
-        st.markdown('<div id="indicadores"></div>', unsafe_allow_html=True)
+        anchor("indicadores")
 
         st.subheader("Empresa seleccionada")
         st.write(f"**{row.get('nombre', '—')}**")
-        st.write(f"Cluster: **{cluster_sel}**")
+        st.write(f"Clúster: **{cluster_sel}**")
         st.caption(f"Comparación: {comparar_con} (n={len(df_ref)})")
         st.divider()
 
         st.subheader("Indicadores (valor, percentil y estadísticos)")
 
         rows = []
-        EPS = 1e-9
         score_list: list[float] = []
 
         for var in VARS_CLUSTER:
@@ -769,19 +753,16 @@ def render_resumen(
             mean = float(s_disp.mean())
             sd = float(s_disp.std(ddof=1))
 
-            if pd.isna(v_disp) or pd.isna(med):
-                flag = "—"
+            tol = 0.01 * (abs(med) + 1e-9)
+            if v_disp > med + tol:
+                flag = "↑"
+            elif v_disp < med - tol:
+                flag = "↓"
             else:
-                tol = 0.01 * (abs(med) + EPS)
-                if v_disp > med + tol:
-                    flag = "↑"
-                elif v_disp < med - tol:
-                    flag = "↓"
-                else:
-                    flag = "≈"
+                flag = "≈"
 
             pctl = empirical_percentile(s_disp, v_disp)
-            z_iqr = robust_score_iqr(s_disp, v_disp)
+            z_iqr = robust_z_iqr(s_disp, v_disp)
             score_list.append(z_iqr)
 
             rows.append(
@@ -828,141 +809,129 @@ def render_resumen(
         else:
             st.warning("No hay indicadores para mostrar.")
 
-    # ======================
-    # TOP EMPRESAS (por ingresos)
-    # ======================
-    st.markdown('<div id="top-empresas"></div>', unsafe_allow_html=True)
-    st.divider()
-    st.subheader("Top empresas (global o por localidad)")
+    # ============================================================
+    # TOP EMPRESAS (plegable)
+    # ============================================================
+    anchor("top-empresas")
+    with st.expander("Top empresas (global o por localidad)", expanded=False):
+        df_top = _ensure_ingresos(df_view=df, base_path=base_path, diagnostic=False)
+        if "ingresos_de_explotacion" not in df_top.columns:
+            st.warning("No puedo calcular el Top: falta ingresos_de_explotacion.")
+        else:
+            df_top["ingresos_rank"] = pd.to_numeric(df_top["ingresos_de_explotacion"], errors="coerce")
 
-    df_top = _ensure_ingresos(df_view=df, base_path=base_path, diagnostic=False)
+            clusters = sorted(df_top["cluster_label"].dropna().unique()) if "cluster_label" in df_top.columns else []
+            if not clusters:
+                st.info("No hay clusters disponibles.")
+            else:
+                colA, colB = st.columns([1.2, 1.0])
+                with colA:
+                    cluster_choice = st.selectbox("Cluster", clusters)
+                with colB:
+                    top_n = st.slider("Top N", 5, 30, 10, 1)
 
-    if "ingresos_de_explotacion" not in df_top.columns:
-        st.warning("No puedo calcular el Top: falta ingresos_de_explotacion.")
-        return
+                df_c = df_top[df_top["cluster_label"] == cluster_choice].copy()
 
-    df_top["ingresos_rank"] = pd.to_numeric(df_top["ingresos_de_explotacion"], errors="coerce")
+                loc_col = None
+                if "localidad_grp" in df_c.columns:
+                    loc_col = "localidad_grp"
+                elif "localidad" in df_c.columns:
+                    loc_col = "localidad"
 
-    clusters = sorted(df_top["cluster_label"].dropna().unique()) if "cluster_label" in df_top.columns else []
-    if not clusters:
-        st.info("No hay clusters disponibles.")
-        return
+                opciones = ["Global (todas)"]
+                if loc_col:
+                    opciones += sorted(df_c[loc_col].dropna().unique())
 
-    colA, colB = st.columns([1.2, 1.0])
-    with colA:
-        cluster_choice = st.selectbox("Cluster", clusters)
-    with colB:
-        top_n = st.slider("Top N", 5, 30, 10, 1)
+                scope_choice = st.selectbox("Ámbito", opciones, index=0)
 
-    df_c = df_top[df_top["cluster_label"] == cluster_choice].copy()
+                if scope_choice == "Global (todas)":
+                    df_rank = df_c.copy()
+                    titulo = f"Top {top_n} — {cluster_choice} (global)"
+                else:
+                    df_rank = df_c[df_c[loc_col] == scope_choice].copy()
+                    titulo = f"Top {top_n} — {cluster_choice} · {scope_choice}"
 
-    loc_col = None
-    if "localidad_grp" in df_c.columns:
-        loc_col = "localidad_grp"
-    elif "localidad" in df_c.columns:
-        loc_col = "localidad"
+                top_df = (
+                    df_rank.dropna(subset=["ingresos_rank"])
+                    .sort_values("ingresos_rank", ascending=False)
+                    .head(top_n)
+                    .loc[:, ["nombre", "ingresos_rank"]]
+                    .rename(columns={"ingresos_rank": "Ingresos de explotación"})
+                )
 
-    opciones = ["Global (todas)"]
-    if loc_col:
-        opciones += sorted(df_c[loc_col].dropna().unique())
+                st.markdown(f"### {titulo}")
+                if top_df.empty:
+                    st.info("No hay datos suficientes para este filtro.")
+                else:
+                    top_df = top_df.reset_index(drop=True)
+                    top_df.index += 1
+                    top_df.index.name = "Ranking"
+                    st.dataframe(top_df, use_container_width=True)
 
-    scope_choice = st.selectbox("Ámbito", opciones, index=0)
+    # ============================================================
+    # DESCARGAS (plegable)
+    # ============================================================
+    anchor("descargas")
+    with st.expander("Descargas", expanded=False):
+        if not stats_df.empty:
+            export_df = stats_df.copy()
+            export_df["Empresa"] = row.get("nombre", "—")
+            export_df["Cluster"] = cluster_sel
+            export_df = export_df[["Empresa", "Cluster"] + [c for c in export_df.columns if c not in ["Empresa", "Cluster"]]]
 
-    if scope_choice == "Global (todas)":
-        df_rank = df_c.copy()
-        titulo = f"Top {top_n} — {cluster_choice} (global)"
-    else:
-        df_rank = df_c[df_c[loc_col] == scope_choice].copy()
-        titulo = f"Top {top_n} — {cluster_choice} · {scope_choice}"
+            buf = io.StringIO()
+            export_df.to_csv(buf, index=False)
+            st.download_button(
+                label="⬇️ Descargar ficha de empresa (CSV)",
+                data=buf.getvalue().encode("utf-8"),
+                file_name=f"ficha_empresa_{cluster_sel}_{row.get('nombre', 'empresa')}.csv",
+                mime="text/csv",
+            )
 
-    top_df = (
-        df_rank.dropna(subset=["ingresos_rank"])
-        .sort_values("ingresos_rank", ascending=False)
-        .head(top_n)
-        .loc[:, ["nombre", "ingresos_rank"]]
-        .rename(columns={"ingresos_rank": "Ingresos de explotación"})
-    )
-
-    st.markdown(f"### {titulo}")
-
-    if top_df.empty:
-        st.info("No hay datos suficientes para este filtro.")
-    else:
-        top_df = top_df.reset_index(drop=True)
-        top_df.index += 1
-        top_df.index.name = "Ranking"
-        st.dataframe(top_df, use_container_width=True)
-
-    # ======================
-    # DESCARGAS
-    # ======================
-    st.markdown('<div id="descargas"></div>', unsafe_allow_html=True)
-    st.divider()
-    st.subheader("Descargas")
-
-    if not stats_df.empty:
-        export_df = stats_df.copy()
-        export_df["Empresa"] = row.get("nombre", "—")
-        export_df["Cluster"] = cluster_sel
-        export_df = export_df[["Empresa", "Cluster"] + [c for c in export_df.columns if c not in ["Empresa", "Cluster"]]]
-
-        buf = io.StringIO()
-        export_df.to_csv(buf, index=False)
+        mini_cols = [c for c in ["nombre", "cluster_label", "PC1", "PC2"] + VARS_CLUSTER if c in df_ref.columns]
+        buf2 = io.StringIO()
+        df_ref[mini_cols].to_csv(buf2, index=False)
         st.download_button(
-            label="⬇️ Descargar ficha de empresa (CSV)",
-            data=buf.getvalue().encode("utf-8"),
-            file_name=f"ficha_empresa_{cluster_sel}_{row.get('nombre', 'empresa')}.csv",
+            label="⬇️ Descargar datos de referencia (CSV)",
+            data=buf2.getvalue().encode("utf-8"),
+            file_name=f"datos_referencia_{'cluster' if comparar_con == 'Solo su cluster' else 'total'}.csv",
             mime="text/csv",
         )
 
-    mini_cols = [c for c in ["nombre", "cluster_label", "PC1", "PC2"] + VARS_CLUSTER if c in df_ref.columns]
-    buf2 = io.StringIO()
-    df_ref[mini_cols].to_csv(buf2, index=False)
-    st.download_button(
-        label="⬇️ Descargar datos de referencia (CSV)",
-        data=buf2.getvalue().encode("utf-8"),
-        file_name=f"datos_referencia_{'cluster' if comparar_con == 'Solo su cluster' else 'total'}.csv",
-        mime="text/csv",
-    )
+        st.divider()
+        st.subheader("Descargas — base completa por clúster")
 
-    # ======================
-    # DESCARGAS (extra: base completa por cluster)
-    # ======================
-    st.divider()
-    st.subheader("Descargas — base completa por clúster")
-
-    if "cluster_label" not in df.columns:
-        st.warning("No puedo crear la descarga por clúster: falta `cluster_label`.")
-    else:
-        vars_ok = [v for v in VARS_CLUSTER if v in df.columns]
-        if len(vars_ok) == 0:
-            st.warning("No puedo crear la descarga por clúster: no encuentro `VARS_CLUSTER`.")
+        if "cluster_label" not in df.columns:
+            st.warning("No puedo crear la descarga por clúster: falta `cluster_label`.")
         else:
-            df_full_valid = df.dropna(subset=vars_ok + ["cluster_label"]).copy()
-
-            export_cols = [c for c in ["nombre", "codigo_nif", "cluster_label"] if c in df_full_valid.columns]
-            if len(export_cols) < 2:
-                st.warning("No puedo crear la descarga: faltan columnas (nombre/codigo_nif/cluster_label).")
+            vars_ok = [v for v in VARS_CLUSTER if v in df.columns]
+            if len(vars_ok) == 0:
+                st.warning("No puedo crear la descarga por clúster: no encuentro `VARS_CLUSTER`.")
             else:
-                df_export_base = df_full_valid[export_cols].copy()
-                st.caption(f"Casos válidos (complete cases en VARS_CLUSTER): n={len(df_export_base)}")
+                df_full_valid = df.dropna(subset=vars_ok + ["cluster_label"]).copy()
 
-                def _download_df(_df: pd.DataFrame, fname: str, label: str):
-                    buf = io.StringIO()
-                    _df.to_csv(buf, index=False)
-                    st.download_button(
-                        label=label,
-                        data=buf.getvalue().encode("utf-8"),
-                        file_name=fname,
-                        mime="text/csv",
-                    )
+                export_cols = [c for c in ["nombre", "codigo_nif", "cluster_label"] if c in df_full_valid.columns]
+                if len(export_cols) < 2:
+                    st.warning("No puedo crear la descarga: faltan columnas (nombre/codigo_nif/cluster_label).")
+                else:
+                    df_export_base = df_full_valid[export_cols].copy()
+                    st.caption(f"Casos válidos (complete cases en VARS_CLUSTER): n={len(df_export_base)}")
 
-                cA, cB, cC, cD = st.columns(4)
+                    def _download_df(_df: pd.DataFrame, fname: str, label: str):
+                        buf = io.StringIO()
+                        _df.to_csv(buf, index=False)
+                        st.download_button(
+                            label=label,
+                            data=buf.getvalue().encode("utf-8"),
+                            file_name=fname,
+                            mime="text/csv",
+                        )
 
-                with cA:
-                    _download_df(df_export_base, "base_completa_clusters_total.csv", "⬇️ Total (CSV)")
+                    cA, cB, cC, cD = st.columns(4)
+                    with cA:
+                        _download_df(df_export_base, "base_completa_clusters_total.csv", "⬇️ Total (CSV)")
 
-                for cl, col in [("C1", cB), ("C2", cC), ("C3", cD)]:
-                    with col:
-                        df_cl = df_export_base[df_full_valid["cluster_label"].astype(str) == cl].copy()
-                        _download_df(df_cl, f"base_completa_clusters_{cl}.csv", f"⬇️ {cl} (CSV)")
+                    for cl, col in [("C1", cB), ("C2", cC), ("C3", cD)]:
+                        with col:
+                            df_cl = df_export_base[df_full_valid["cluster_label"].astype(str).map(_normalize_cluster_label) == cl].copy()
+                            _download_df(df_cl, f"base_completa_clusters_{cl}.csv", f"⬇️ {cl} (CSV)")
