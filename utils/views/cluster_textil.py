@@ -1,3 +1,12 @@
+import inspect, os
+
+def render_cluster_textil(...):
+    st.header("Sector textil — clustering interno (k=3)")
+
+    # DEBUG: de dónde se está importando esto
+    st.caption(f"DEBUG cluster_textil __file__: {os.path.abspath(__file__)}")
+    st.caption(f"DEBUG cluster_textil source: {inspect.getsourcefile(render_cluster_textil)}")
+    
 # utils/views/cluster_textil.py
 import numpy as np
 import pandas as pd
