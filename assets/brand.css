@@ -1,0 +1,97 @@
+/* =========
+   TIPOGRAFÍA
+   ========= */
+:root {
+  --brand-primary: #6FA1D9;
+  --brand-primary-dark: #415F7F;
+  --brand-ink: #2F475A;
+  --brand-muted: #8E868A;
+  --brand-accent-warm: #D9AA84;
+  --brand-accent-strong: #BC6A3B;
+  --brand-danger: #BC523B;
+
+  --font-brand: "Avenir Next", "Avenir", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+html, body, [class*="css"]  {
+  font-family: var(--font-brand) !important;
+}
+
+/* Títulos */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-brand) !important;
+  letter-spacing: -0.2px;
+  color: #111;
+}
+
+/* =========
+   CONTROLES
+   ========= */
+
+/* Botones */
+.stButton > button {
+  background: var(--brand-primary);
+  color: white;
+  border: 1px solid var(--brand-primary);
+  border-radius: 10px;
+  padding: 0.55rem 0.95rem;
+  font-weight: 650;
+}
+.stButton > button:hover {
+  background: var(--brand-primary-dark);
+  border-color: var(--brand-primary-dark);
+}
+.stButton > button:active {
+  transform: translateY(1px);
+}
+
+/* Download button (mismo look) */
+a[download], .stDownloadButton > button {
+  border-radius: 10px !important;
+}
+
+/* Radios y checkboxes (lo más “seguro” sin pelearse con Streamlit) */
+div[role="radiogroup"] label,
+.stCheckbox label {
+  font-family: var(--font-brand) !important;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+  background: #F5F7FA;
+}
+section[data-testid="stSidebar"] * {
+  font-family: var(--font-brand) !important;
+}
+
+/* Dataframes: cabecera */
+div[data-testid="stDataFrame"] thead tr th {
+  background: rgba(111, 161, 217, 0.12);
+  color: #111;
+  font-weight: 650;
+}
+
+/* Separadores */
+hr {
+  border-color: rgba(47, 71, 90, 0.12);
+}
+
+/* assets/brand.css */
+.section-title {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.small-muted {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.hr-soft {
+  border: 0;
+  border-top: 1px solid rgba(0,0,0,0.08);
+  margin: 0.75rem 0;
+}
+
+/* hace más “compactos” sliders/inputs */
+[data-testid="stSlider"] { padding-top: 0.25rem; padding-bottom: 0.25rem; }
