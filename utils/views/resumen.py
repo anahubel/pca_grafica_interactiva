@@ -184,7 +184,6 @@ def _normalize_cluster_label(x) -> str:
 
 
 def _hovertemplate_basic() -> str:
-    # Usaremos customdata = [nombre, nif, cluster]
     return (
         "<b>%{customdata[0]}</b>"
         "<br>NIF: %{customdata[1]}"
@@ -201,8 +200,35 @@ def _customdata(df_: pd.DataFrame) -> np.ndarray:
 
 
 def _selected_marker_style(color_hex: str) -> dict:
-    # marcador “integrado”: mismo color del cluster, con borde para resaltar
     return dict(size=16, symbol="circle", color=color_hex, line=dict(width=3, color="white"))
+
+
+def _apply_plotly_base(fig, **overrides):
+    """
+    Aplica plotly_layout_base de forma robusta.
+    - Si devuelve dict tipo template {"layout": {...}, "data": {...}} => usa solo layout
+    - Si devuelve dict de layout => update_layout(**kwargs)
+    - Si devuelve None => no hace nada
+    SIEMPRE devuelve fig (pero NO debes pasar su retorno a update_layout)
+    """
+    def _extract_layout(d: dict) -> dict:
+        if not isinstance(d, dict):
+            return {}
+        if "layout" in d and isinstance(d["layout"], dict):
+            d = d["layout"]
+        d = {k: v for k, v in d.items() if k != "data"}
+        return d
+
+    try:
+        out = plotly_layout_base(fig, **overrides)
+        if isinstance(out, dict):
+            fig.update_layout(**_extract_layout(out))
+        return fig
+    except TypeError:
+        out = plotly_layout_base(**overrides)
+        if isinstance(out, dict):
+            fig.update_layout(**_extract_layout(out))
+        return fig
 
 
 # ============================================================
@@ -253,7 +279,7 @@ def render_resumen(
     pct_sel = (n_sel / max(1, len(df))) * 100.0
 
     # ======================
-    # Story (igual que tenías)
+    # Story
     # ======================
     CLUSTER_STORY = {
         "C1": {
@@ -339,7 +365,7 @@ def render_resumen(
     )
 
     # ======================
-    # Funciones: percentil + score global
+    # Funciones
     # ======================
     def empirical_percentile(s: pd.Series, x: float) -> float:
         s = pd.to_numeric(s, errors="coerce").dropna()
@@ -378,13 +404,17 @@ def render_resumen(
         anchor("pca")
 
         # ======================
-        # PCA (hover consistente + sin streamlitApp)
+        # PCA
         # ======================
         with st.expander("PCA", expanded=True):
             if ("PC1" not in df.columns) or ("PC2" not in df.columns) or ("PC1" not in row.index) or ("PC2" not in row.index):
                 st.warning("No puedo mostrar el gráfico PCA: faltan columnas PC1 y/o PC2.")
             else:
-                color_map = {"C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d", "1": "#1f3b73", "2": "#d97706", "3": "#15803d", "1.0": "#1f3b73", "2.0": "#d97706", "3.0": "#15803d"}
+                color_map = {
+                    "C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d",
+                    "1": "#1f3b73", "2": "#d97706", "3": "#15803d",
+                    "1.0": "#1f3b73", "2.0": "#d97706", "3.0": "#15803d",
+                }
 
                 df_plot = df.copy()
                 if "cluster_label" in df_plot.columns:
@@ -405,10 +435,9 @@ def render_resumen(
                     customdata=_customdata(df_plot),
                     hovertemplate=_hovertemplate_basic(),
                 )
-                fig.update_layout(**plotly_layout_base(height=520))
+                _apply_plotly_base(fig, height=520, margin=dict(l=30, r=30, t=60, b=30))
                 fig.update_layout(legend=dict(orientation="h", y=-0.18))
 
-                # Seleccionada (mismo color de cluster + borde)
                 sel_color = color_map.get(cluster_sel, "#111111")
                 fig.add_trace(
                     go.Scatter(
@@ -429,7 +458,7 @@ def render_resumen(
                 st.plotly_chart(fig, use_container_width=True)
 
         # ======================
-        # UMAP (plegable)
+        # UMAP
         # ======================
         with st.expander("UMAP — proyección no lineal (sobre variables del clustering)", expanded=False):
             vars_model_umap = [v for v in VARS_CLUSTER if v in df.columns]
@@ -477,10 +506,11 @@ def render_resumen(
                         customdata=_customdata(df_umap),
                         hovertemplate=_hovertemplate_basic(),
                     )
-                    fig_u.update_layout(**plotly_layout_base(height=520))
+
+                    # ✅ CLAVE: NO update_layout(_apply_plotly_base(...))
+                    _apply_plotly_base(fig_u, height=520, margin=dict(l=30, r=30, t=60, b=30))
                     fig_u.update_layout(legend=dict(orientation="h", y=-0.18))
 
-                    # Seleccionada (si existe en df_umap por nombre/nif)
                     sel_name = str(row.get("nombre", "")).strip()
                     sel_nif = str(row.get("codigo_nif", "")).strip()
 
@@ -508,7 +538,7 @@ def render_resumen(
                     st.caption("UMAP conserva vecindarios locales, pero las distancias globales no son directamente comparables.")
 
         # ======================
-        # 3D (plegable + integrado + con/sin seleccionada)
+        # 3D
         # ======================
         with st.expander("3D — espacio del clustering (variables escaladas)", expanded=False):
             vars_model_3d = [v for v in ["rotacion_stocks", "productividad_va_pax", "inmovilizado_empleado"] if v in df.columns]
@@ -611,9 +641,9 @@ def render_resumen(
                         else:
                             st.info("La empresa seleccionada no aparece en el 3D (NaN en alguna de las 3 variables).")
 
+                    # ✅ CLAVE: base por separado, y NUNCA pasando fig (PCA)
+                    _apply_plotly_base(fig3d, height=520, margin=dict(l=30, r=30, t=60, b=30))
                     fig3d.update_layout(
-                        **plotly_layout_base(height=720),
-                        legend=dict(orientation="h", y=-0.10),
                         scene=dict(
                             xaxis_title=f"{LABELS.get(vars_model_3d[0], vars_model_3d[0])} (z)",
                             yaxis_title=f"{LABELS.get(vars_model_3d[1], vars_model_3d[1])} (z)",
@@ -624,34 +654,27 @@ def render_resumen(
                     st.plotly_chart(fig3d, use_container_width=True)
 
         # ======================
-        # Interpretación (plegable)
+        # Interpretación
         # ======================
         anchor("interpretacion")
         with st.expander(story_title, expanded=True):
             st.caption(f"Clúster: **{cluster_sel}** · n={n_sel} ({pct_sel:.1f}% de la muestra)")
             st.markdown(f"**{story.get('titulo', '—')}**")
-
             st.markdown("**Rasgos estructurales:**")
             st.markdown("- " + "\n- ".join(story.get("rasgos_estructurales", [])))
-
             st.markdown("**Rasgos económicos:**")
             st.markdown("- " + "\n- ".join(story.get("rasgos_economicos", [])))
-
             st.markdown("**Lectura económica:**")
             st.markdown("- " + "\n- ".join(story.get("lectura_economica", [])))
-
             st.markdown("**Implicaciones prácticas:**")
             st.markdown("- " + "\n- ".join(story.get("implicaciones", [])))
 
         # ======================
-        # Radar (plegable) — ARREGLADO
+        # Radar
         # ======================
         anchor("perfil-radar")
         with st.expander("Perfil (radar)", expanded=False):
-            # radar robusto: z_iqr clip [-2,2] -> [0,1]
-            cats = []
-            r_emp = []
-            r_ref = []
+            cats, r_emp, r_ref = [], [], []
 
             for var in VARS_CLUSTER:
                 if var not in df_ref.columns:
@@ -665,13 +688,10 @@ def render_resumen(
                 s_disp = to_display_scale(var, s_raw)
                 v_disp = float(to_display_scale(var, pd.Series([v_raw])).iloc[0])
 
-                # empresa
                 z_emp = robust_z_iqr(s_disp, v_disp)
                 if pd.isna(z_emp):
                     continue
-                emp01 = (z_emp + 2.0) / 4.0  # [-2,2] -> [0,1]
-
-                # referencia: mediana del grupo (z=0 => 0.5)
+                emp01 = (z_emp + 2.0) / 4.0
                 ref01 = 0.5
 
                 cats.append(LABELS.get(var, var))
@@ -706,17 +726,17 @@ def render_resumen(
                         hovertemplate="%{theta}: %{r:.0%}<extra></extra>",
                     )
                 )
+
+                # ✅ CLAVE: base por separado
+                _apply_plotly_base(fig_r, height=520, margin=dict(l=30, r=30, t=60, b=30))
                 fig_r.update_layout(
-                    **plotly_layout_base(height=520),
-                    polar=dict(radialaxis=dict(visible=True, range=[0, 1], tickformat=".0%")),
                     legend=dict(orientation="h", y=-0.15),
                     title="Radar — posición robusta (IQR) vs referencia",
-                    margin=dict(l=30, r=30, t=60, b=30),
                 )
                 st.plotly_chart(fig_r, use_container_width=True)
 
     # ============================================================
-    # RIGHT: indicadores (lo mantengo, pero compacto)
+    # RIGHT: indicadores
     # ============================================================
     with right:
         anchor("indicadores")
