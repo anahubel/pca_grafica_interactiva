@@ -13,21 +13,34 @@ def load_css(path: str = "assets/brand.css") -> None:
     st.session_state["__css_loaded__"] = True
 
 
-def plotly_layout_base(fig=None, height: int | None = None):
-    layout = dict(
+def load_css(path: str = "assets/brand.css") -> None:
+    if st.session_state.get("__css_loaded__", False):
+        return
+    p = Path(path)
+    if p.exists():
+        st.markdown(f"<style>{p.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+    st.session_state["__css_loaded__"] = True
+
+
+def plotly_layout_base(fig, height=None, **overrides):
+    base = dict(
         template="plotly_white",
-        # ❌ QUITAR margin de aquí
+        margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(orientation="h", y=-0.15),
         hoverlabel=dict(font_size=12),
     )
     if height is not None:
-        layout["height"] = height
-
-    if fig is None:
-        return layout
-
-    fig.update_layout(**layout)
+        base["height"] = height
+    base.update(overrides)
+    fig.update_layout(**base)
     return fig
 
+
+def anchor(id_: str):
+    st.markdown(f'<div id="{id_}"></div>', unsafe_allow_html=True)
+
+def enforce_no_extra(fig):
+    return remove_plotly_extra(fig)
 
 def remove_plotly_extra(fig):
     """
@@ -43,6 +56,13 @@ def remove_plotly_extra(fig):
             # Si no hay hovertemplate, le ponemos uno mínimo sin extra
             tr.hovertemplate = "%{x}, %{y}<extra></extra>"
     return fig
+
+def enforce_no_extra(fig):
+    """
+    Alias de compatibilidad: en otros módulos usamos enforce_no_extra.
+    Aquí reutilizamos remove_plotly_extra.
+    """
+    return remove_plotly_extra(fig)
 
 
 def anchor(id_: str):
