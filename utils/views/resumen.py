@@ -491,6 +491,9 @@ def render_resumen(
                     df_umap["cluster_label"] = df_umap["cluster_label"].astype(str).map(_normalize_cluster_label)
         
                     color_map_umap = {"C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d"}
+        
+                    use_custom = {"nombre", "codigo_nif", "cluster_label"}.issubset(df_umap.columns)
+        
                     fig_u = px.scatter(
                         df_umap,
                         x="__umap1",
@@ -498,11 +501,16 @@ def render_resumen(
                         color="cluster_label",
                         opacity=0.85,
                         color_discrete_map=color_map_umap,
-                        labels={"__umap1": "UMAP 1", "__umap2": "UMAP 2", "cluster_label": "Modelo de negocio"},
+                        labels={
+                            "__umap1": "UMAP 1",
+                            "__umap2": "UMAP 2",
+                            "cluster_label": "Modelo de negocio",
+                        },
+                        custom_data=["nombre", "codigo_nif", "cluster_label"] if use_custom else None,
                     )
+        
                     fig_u.update_traces(
                         marker=dict(size=8, line=dict(width=0.5, color="white")),
-                        customdata=_customdata(df_umap),
                         hovertemplate=_hovertemplate_basic(),
                     )
         
