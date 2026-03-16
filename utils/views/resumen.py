@@ -2,6 +2,7 @@
 import io
 import os
 import glob
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -13,7 +14,6 @@ from sklearn.preprocessing import StandardScaler
 from utils.config import VARS_CLUSTER, LABELS, DATA_PATH
 from utils.fmt import to_display_scale, fmt_num
 from utils.ui import plotly_layout_base, anchor
-
 
 # ============================================================
 # Helpers: encontrar y mergear ingresos_de_explotacion
@@ -31,7 +31,6 @@ def _read_any(path: str) -> pd.DataFrame | None:
         return None
     return None
 
-
 def _list_candidate_files(root: str) -> list[str]:
     if not root:
         return []
@@ -44,7 +43,6 @@ def _list_candidate_files(root: str) -> list[str]:
             files.extend(glob.glob(os.path.join(root, p), recursive=True))
         return files
     return []
-
 
 @st.cache_data(show_spinner=False)
 def _find_base_with_ingresos(base_path: str | None) -> tuple[pd.DataFrame | None, str | None]:
@@ -87,7 +85,6 @@ def _find_base_with_ingresos(base_path: str | None) -> tuple[pd.DataFrame | None
 
     return None, None
 
-
 def _ensure_ingresos(df_view: pd.DataFrame, base_path: str | None, diagnostic: bool = False) -> pd.DataFrame:
     if "ingresos_de_explotacion" in df_view.columns:
         return df_view
@@ -121,7 +118,6 @@ def _ensure_ingresos(df_view: pd.DataFrame, base_path: str | None, diagnostic: b
         st.caption(f"Merge key: {merge_key} · ingresos no-nulo: {out['ingresos_de_explotacion'].notna().sum()}")
 
     return out
-
 
 # ============================================================
 # Helpers: UMAP (2D)
@@ -173,7 +169,6 @@ def _compute_umap_embedding(
     keep = [c for c in ["__umap1", "__umap2", "cluster_label", "nombre", "codigo_nif"] if c in out.columns]
     return out[keep].copy()
 
-
 # ============================================================
 # Helpers UI / hover
 # ============================================================
@@ -181,7 +176,6 @@ def _normalize_cluster_label(x) -> str:
     m = {"1": "C1", "1.0": "C1", "2": "C2", "2.0": "C2", "3": "C3", "3.0": "C3"}
     s = str(x).strip()
     return m.get(s, s)
-
 
 def _hovertemplate_basic() -> str:
     return (
@@ -191,45 +185,14 @@ def _hovertemplate_basic() -> str:
         "<extra></extra>"
     )
 
-
 def _customdata(df_: pd.DataFrame) -> np.ndarray:
     nombre = df_["nombre"].astype(str) if "nombre" in df_.columns else pd.Series(["—"] * len(df_))
     nif = df_["codigo_nif"].astype(str) if "codigo_nif" in df_.columns else pd.Series(["—"] * len(df_))
     cl = df_["cluster_label"].astype(str) if "cluster_label" in df_.columns else pd.Series(["—"] * len(df_))
     return np.stack([nombre.to_numpy(), nif.to_numpy(), cl.to_numpy()], axis=1)
 
-
 def _selected_marker_style(color_hex: str) -> dict:
     return dict(size=16, symbol="circle", color=color_hex, line=dict(width=3, color="white"))
-
-
-def _apply_plotly_base(fig, **overrides):
-    """
-    Aplica plotly_layout_base de forma robusta.
-    - Si devuelve dict tipo template {"layout": {...}, "data": {...}} => usa solo layout
-    - Si devuelve dict de layout => update_layout(**kwargs)
-    - Si devuelve None => no hace nada
-    SIEMPRE devuelve fig (pero NO debes pasar su retorno a update_layout)
-    """
-    def _extract_layout(d: dict) -> dict:
-        if not isinstance(d, dict):
-            return {}
-        if "layout" in d and isinstance(d["layout"], dict):
-            d = d["layout"]
-        d = {k: v for k, v in d.items() if k != "data"}
-        return d
-
-    try:
-        out = plotly_layout_base(fig, **overrides)
-        if isinstance(out, dict):
-            fig.update_layout(**_extract_layout(out))
-        return fig
-    except TypeError:
-        out = plotly_layout_base(**overrides)
-        if isinstance(out, dict):
-            fig.update_layout(**_extract_layout(out))
-        return fig
-
 
 # ============================================================
 # Vista Resumen
@@ -279,7 +242,7 @@ def render_resumen(
     pct_sel = (n_sel / max(1, len(df))) * 100.0
 
     # ======================
-    # Story
+    # Story (igual que lo tenías)
     # ======================
     CLUSTER_STORY = {
         "C1": {
@@ -434,7 +397,13 @@ def render_resumen(
                     },
                     custom_data=["nombre", "codigo_nif", "cluster_label"] if {"nombre", "codigo_nif", "cluster_label"}.issubset(df_plot.columns) else None,
                 )
-                _apply_plotly_base(fig, height=520, margin=dict(l=30, r=30, t=60, b=30))
+                
+                fig.update_traces(
+                    marker=dict(size=8, line=dict(width=0.5, color="white")),
+                    hovertemplate=_hovertemplate_basic(),
+                )
+
+                plotly_layout_base(fig, height=520, margin=dict(l=30, r=30, t=60, b=30))
                 fig.update_layout(legend=dict(orientation="h", y=-0.18))
 
                 sel_color = color_map.get(cluster_sel, "#111111")
@@ -611,44 +580,42 @@ def render_resumen(
                             )
                         )
 
-                    if show_selected:
-                        if not df_sel.empty:
-                            x0 = float(df_sel.iloc[0]["__z1"])
-                            y0 = float(df_sel.iloc[0]["__z2"])
-                            z0 = float(df_sel.iloc[0]["__z3"])
-                            sel_color = color_map_3d.get(cluster_sel, "#111111")
+                    if show_selected and (not df_sel.empty):
+                        x0 = float(df_sel.iloc[0]["__z1"])
+                        y0 = float(df_sel.iloc[0]["__z2"])
+                        z0 = float(df_sel.iloc[0]["__z3"])
+                        sel_color = color_map_3d.get(cluster_sel, "#111111")
 
-                            fig3d.add_trace(
-                                go.Scatter3d(
-                                    x=[x0],
-                                    y=[y0],
-                                    z=[z0],
-                                    mode="markers",
-                                    marker=dict(
-                                        size=float(sel_size),
-                                        color=sel_color,
-                                        opacity=1.0,
-                                        line=dict(width=4, color="white"),
-                                    ),
-                                    showlegend=False,
-                                    customdata=np.array([[sel_name or "—", sel_nif or "—", str(cluster_sel)]]),
-                                    hovertemplate=_hovertemplate_basic(),
+                        fig3d.add_trace(
+                            go.Scatter3d(
+                                x=[x0],
+                                y=[y0],
+                                z=[z0],
+                                mode="markers",
+                                marker=dict(
+                                    size=float(sel_size),
+                                    color=sel_color,
+                                    opacity=1.0,
+                                    line=dict(width=4, color="white"),
+                                ),
+                                showlegend=False,
+                                customdata=np.array([[sel_name or "—", sel_nif or "—", str(cluster_sel)]]),
+                                hovertemplate=_hovertemplate_basic(),
+                            )
+                        )
+
+                        if zoom_3d and zoom_radius is not None:
+                            fig3d.update_layout(
+                                scene=dict(
+                                    xaxis=dict(range=[x0 - zoom_radius, x0 + zoom_radius]),
+                                    yaxis=dict(range=[y0 - zoom_radius, y0 + zoom_radius]),
+                                    zaxis=dict(range=[z0 - zoom_radius, z0 + zoom_radius]),
                                 )
                             )
+                    elif show_selected and df_sel.empty:
+                        st.info("La empresa seleccionada no aparece en el 3D (NaN en alguna de las 3 variables).")
 
-                            if zoom_3d and zoom_radius is not None:
-                                fig3d.update_layout(
-                                    scene=dict(
-                                        xaxis=dict(range=[x0 - zoom_radius, x0 + zoom_radius]),
-                                        yaxis=dict(range=[y0 - zoom_radius, y0 + zoom_radius]),
-                                        zaxis=dict(range=[z0 - zoom_radius, z0 + zoom_radius]),
-                                    )
-                                )
-                        else:
-                            st.info("La empresa seleccionada no aparece en el 3D (NaN en alguna de las 3 variables).")
-
-                    # ✅ CLAVE: base por separado, y NUNCA pasando fig (PCA)
-                    _apply_plotly_base(fig3d, height=520, margin=dict(l=30, r=30, t=60, b=30))
+                    plotly_layout_base(fig3d, height=520, margin=dict(l=30, r=30, t=60, b=30))
                     fig3d.update_layout(
                         scene=dict(
                             xaxis_title=f"{LABELS.get(vars_model_3d[0], vars_model_3d[0])} (z)",
@@ -733,8 +700,7 @@ def render_resumen(
                     )
                 )
 
-                # ✅ CLAVE: base por separado
-                _apply_plotly_base(fig_r, height=520, margin=dict(l=30, r=30, t=60, b=30))
+                plotly_layout_base(fig_r, height=520, margin=dict(l=30, r=30, t=60, b=30))
                 fig_r.update_layout(
                     legend=dict(orientation="h", y=-0.15),
                     title="Radar — posición robusta (IQR) vs referencia",
