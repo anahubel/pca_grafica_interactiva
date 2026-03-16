@@ -471,7 +471,7 @@ def render_resumen(
                     umap_min_dist = st.slider("min_dist", 0.0, 0.99, 0.10, 0.01)
                 with c3:
                     umap_seed = st.number_input("random_state", min_value=0, max_value=10_000, value=42, step=1)
-
+        
                 try:
                     df_umap = _compute_umap_embedding(
                         df_in=df,
@@ -483,13 +483,13 @@ def render_resumen(
                 except ImportError as e:
                     st.error(str(e))
                     df_umap = pd.DataFrame()
-
+        
                 if df_umap.empty:
                     st.warning("UMAP no disponible (muy pocos casos válidos o faltan datos).")
                 else:
                     df_umap = df_umap.copy()
                     df_umap["cluster_label"] = df_umap["cluster_label"].astype(str).map(_normalize_cluster_label)
-
+        
                     color_map_umap = {"C1": "#1f3b73", "C2": "#d97706", "C3": "#15803d"}
                     fig_u = px.scatter(
                         df_umap,
@@ -505,20 +505,19 @@ def render_resumen(
                         customdata=_customdata(df_umap),
                         hovertemplate=_hovertemplate_basic(),
                     )
-
-                    # ✅ CLAVE: NO update_layout(_apply_plotly_base(...))
-                    _apply_plotly_base(fig_u, height=520, margin=dict(l=30, r=30, t=60, b=30))
+        
+                    plotly_layout_base(fig_u, height=520, margin=dict(l=30, r=30, t=60, b=30))
                     fig_u.update_layout(legend=dict(orientation="h", y=-0.18))
-
+        
                     sel_name = str(row.get("nombre", "")).strip()
                     sel_nif = str(row.get("codigo_nif", "")).strip()
-
+        
                     sub = pd.DataFrame()
                     if sel_nif and "codigo_nif" in df_umap.columns:
                         sub = df_umap[df_umap["codigo_nif"].astype(str).str.strip() == sel_nif].copy()
                     if sub.empty and sel_name and "nombre" in df_umap.columns:
                         sub = df_umap[df_umap["nombre"].astype(str).str.strip() == sel_name].copy()
-
+        
                     if not sub.empty:
                         sel_color = color_map_umap.get(cluster_sel, "#111111")
                         fig_u.add_trace(
@@ -532,7 +531,7 @@ def render_resumen(
                                 hovertemplate=_hovertemplate_basic(),
                             )
                         )
-
+        
                     st.plotly_chart(fig_u, use_container_width=True)
                     st.caption("UMAP conserva vecindarios locales, pero las distancias globales no son directamente comparables.")
 
