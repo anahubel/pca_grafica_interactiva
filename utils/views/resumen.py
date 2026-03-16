@@ -427,13 +427,12 @@ def render_resumen(
                     color="cluster_label" if "cluster_label" in df_plot.columns else None,
                     opacity=0.75,
                     color_discrete_map=color_map,
-                    labels={"PC1": "Componente principal 1", "PC2": "Componente principal 2", "cluster_label": "Modelo de negocio"},
-                )
-
-                fig.update_traces(
-                    marker=dict(size=8, line=dict(width=0.5, color="white")),
-                    customdata=_customdata(df_plot),
-                    hovertemplate=_hovertemplate_basic(),
+                    labels={
+                        "PC1": "Componente principal 1",
+                        "PC2": "Componente principal 2",
+                        "cluster_label": "Modelo de negocio",
+                    },
+                    custom_data=["nombre", "codigo_nif", "cluster_label"] if {"nombre", "codigo_nif", "cluster_label"}.issubset(df_plot.columns) else None,
                 )
                 _apply_plotly_base(fig, height=520, margin=dict(l=30, r=30, t=60, b=30))
                 fig.update_layout(legend=dict(orientation="h", y=-0.18))
