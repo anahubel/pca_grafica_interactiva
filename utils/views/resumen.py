@@ -15,6 +15,8 @@ from utils.config import VARS_CLUSTER, LABELS, DATA_PATH
 from utils.fmt import to_display_scale, fmt_num
 from utils.ui import plotly_layout_base, anchor
 
+from sklearn.linear_model import LinearRegression
+
 # ============================================================
 # Helpers: encontrar y mergear ingresos_de_explotacion
 # ============================================================
@@ -193,6 +195,162 @@ def _customdata(df_: pd.DataFrame) -> np.ndarray:
 
 def _selected_marker_style(color_hex: str) -> dict:
     return dict(size=16, symbol="circle", color=color_hex, line=dict(width=3, color="white"))
+
+def _find_first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def _label(col: str) -> str:
+    return LABELS.get(col, col)
+
+
+def _make_label_maps(cols: list[str]) -> tuple[list[str], dict[str, str]]:
+    """
+    Evita colisiones de labels. Si dos columnas tienen el mismo label,
+    añade [nombre_columna].
+    """
+    labels = [_label(c) for c in cols]
+    seen: dict[str, int] = {}
+    out = []
+
+    for c, lab in zip(cols, labels):
+        if lab in seen:
+            seen[lab] += 1
+            out.append(f"{lab} [{c}]")
+        else:
+            seen[lab] = 1
+            out.append(lab)
+
+    lab_to_col = {lab: c for lab, c in zip(out, cols)}
+    return out, lab_to_col
+
+
+def _coerce_numeric_series(s: pd.Series) -> pd.Series:
+    """
+    Convierte a numérico soportando formatos tipo:
+      - 1.234,56
+      - 5,9E+05
+      - 5.9E+05
+    """
+    if s is None:
+        return pd.Series([], dtype=float)
+
+    if pd.api.types.is_numeric_dtype(s):
+        return pd.to_numeric(s, errors="coerce")
+
+    x = s.astype(str).str.strip()
+    x = x.str.replace("\u00a0", "", regex=False)
+
+    mask_sci = x.str.contains(r"[eE]", na=False)
+    if mask_sci.any():
+        xs = x.where(mask_sci, "")
+        xs = xs.str.replace(",", ".", regex=False)
+        x = x.where(~mask_sci, xs)
+
+    mask_es = (~mask_sci) & x.str.contains(r"\.", na=False) & x.str.contains(r",", na=False)
+    if mask_es.any():
+        xe = x.where(mask_es, "")
+        xe = xe.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+        x = x.where(~mask_es, xe)
+
+    mask_comma = (~mask_sci) & (~mask_es) & x.str.contains(",", na=False)
+    if mask_comma.any():
+        xc = x.where(mask_comma, "")
+        xc = xc.str.replace(",", ".", regex=False)
+        x = x.where(~mask_comma, xc)
+
+    return pd.to_numeric(x, errors="coerce")
+
+def _compute_interaction_surface(
+    df_in: pd.DataFrame,
+    x_var: str,
+    y_var: str,
+    z_var: str,
+    grid_n: int = 35,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame] | None:
+    """
+    Ajusta una superficie simple con interacción:
+        z ~ x + y + x*y
+    y devuelve una malla X, Y, Zhat para representar en 3D.
+
+    También devuelve el dataframe limpio usado en el ajuste.
+    """
+    cols = [x_var, y_var, z_var]
+    if any(c not in df_in.columns for c in cols):
+        return None
+
+    d = df_in[cols].copy()
+    for c in cols:
+        d[c] = _coerce_numeric_series(d[c])
+    d = d.dropna().copy()
+
+    if len(d) < 20:
+        return None
+
+    X = pd.DataFrame({
+        x_var: d[x_var].astype(float),
+        y_var: d[y_var].astype(float),
+        "xy": (d[x_var] * d[y_var]).astype(float),
+    })
+    y = d[z_var].astype(float)
+
+    model = LinearRegression()
+    model.fit(X, y)
+
+    x_grid = np.linspace(float(d[x_var].min()), float(d[x_var].max()), int(grid_n))
+    y_grid = np.linspace(float(d[y_var].min()), float(d[y_var].max()), int(grid_n))
+    XX, YY = np.meshgrid(x_grid, y_grid)
+
+    X_pred = pd.DataFrame({
+        x_var: XX.ravel(),
+        y_var: YY.ravel(),
+        "xy": (XX * YY).ravel(),
+    })
+    ZZ = model.predict(X_pred).reshape(XX.shape)
+
+    return XX, YY, ZZ, d
+
+
+def _predict_surface_point(
+    x_val: float,
+    y_val: float,
+    df_fit: pd.DataFrame,
+    x_var: str,
+    y_var: str,
+    z_var: str,
+) -> float | None:
+    """
+    Predicción puntual usando el mismo modelo:
+        z ~ x + y + x*y
+    """
+    d = df_fit[[x_var, y_var, z_var]].copy()
+    d[x_var] = _coerce_numeric_series(d[x_var])
+    d[y_var] = _coerce_numeric_series(d[y_var])
+    d[z_var] = _coerce_numeric_series(d[z_var])
+    d = d.dropna().copy()
+
+    if len(d) < 20 or pd.isna(x_val) or pd.isna(y_val):
+        return None
+
+    X = pd.DataFrame({
+        x_var: d[x_var].astype(float),
+        y_var: d[y_var].astype(float),
+        "xy": (d[x_var] * d[y_var]).astype(float),
+    })
+    y = d[z_var].astype(float)
+
+    model = LinearRegression()
+    model.fit(X, y)
+
+    pt = pd.DataFrame({
+        x_var: [float(x_val)],
+        y_var: [float(y_val)],
+        "xy": [float(x_val) * float(y_val)],
+    })
+
+    return float(model.predict(pt)[0])
 
 # ============================================================
 # Vista Resumen
@@ -625,6 +783,153 @@ def render_resumen(
                         scene_camera=dict(eye=dict(x=1.35, y=1.35, z=1.10)),
                     )
                     st.plotly_chart(fig3d, use_container_width=True)
+
+        # ======================
+        # 3D SUPERFICIE
+        # ======================
+        with st.expander("3D — superficie de interacción", expanded=False):
+            try:
+                x_default = _find_first_existing(df, ["edad", "Edad", "EDAD"])
+                y_default = _find_first_existing(df, ["precaglobal", "PRECAGLOB", "precaglob", "precariedad_global"])
+                z_default = _find_first_existing(df, ["bienestar", "Bienestar", "BIENESTAR"])
+        
+                numeric_candidates = []
+                for c in df.columns:
+                    s = _coerce_numeric_series(df[c])
+                    if s.notna().sum() >= 20:
+                        numeric_candidates.append(c)
+        
+                if len(numeric_candidates) < 3:
+                    st.warning("No hay suficientes variables numéricas para construir la superficie 3D.")
+                else:
+                    lbls_3d, lbl_to_var_3d = _make_label_maps(sorted(numeric_candidates, key=lambda c: _label(c)))
+        
+                    x_idx = 0
+                    y_idx = min(1, len(lbls_3d) - 1)
+                    z_idx = min(2, len(lbls_3d) - 1)
+        
+                    if x_default and x_default in numeric_candidates:
+                        x_lab_default = next((lab for lab, var in lbl_to_var_3d.items() if var == x_default), None)
+                        if x_lab_default in lbls_3d:
+                            x_idx = lbls_3d.index(x_lab_default)
+        
+                    if y_default and y_default in numeric_candidates:
+                        y_lab_default = next((lab for lab, var in lbl_to_var_3d.items() if var == y_default), None)
+                        if y_lab_default in lbls_3d:
+                            y_idx = lbls_3d.index(y_lab_default)
+        
+                    if z_default and z_default in numeric_candidates:
+                        z_lab_default = next((lab for lab, var in lbl_to_var_3d.items() if var == z_default), None)
+                        if z_lab_default in lbls_3d:
+                            z_idx = lbls_3d.index(z_lab_default)
+        
+                    cA, cB, cC = st.columns([1, 1, 1])
+                    with cA:
+                        x_lab = st.selectbox("Eje X", lbls_3d, index=x_idx, key="surf_x")
+                    with cB:
+                        y_lab = st.selectbox("Eje Y", lbls_3d, index=y_idx, key="surf_y")
+                    with cC:
+                        z_lab = st.selectbox("Eje Z", lbls_3d, index=z_idx, key="surf_z")
+        
+                    x_var = lbl_to_var_3d[x_lab]
+                    y_var = lbl_to_var_3d[y_lab]
+                    z_var = lbl_to_var_3d[z_lab]
+        
+                    if len({x_var, y_var, z_var}) < 3:
+                        st.info("Selecciona tres variables distintas.")
+                    else:
+                        c1, c2, c3 = st.columns([1.0, 1.0, 1.2])
+                        with c1:
+                            grid_n = st.slider("Resolución malla", 20, 60, 35, 5, key="surf_grid_n")
+                        with c2:
+                            point_size = st.slider("Tamaño punto empresa", 6, 20, 12, 1, key="surf_pt_size")
+                        with c3:
+                            show_selected_surface = st.checkbox("Mostrar empresa seleccionada", value=True, key="surf_show_sel")
+        
+                        surface_out = _compute_interaction_surface(
+                            df_in=df,
+                            x_var=x_var,
+                            y_var=y_var,
+                            z_var=z_var,
+                            grid_n=int(grid_n),
+                        )
+        
+                        if surface_out is None:
+                            st.warning("No he podido construir la superficie 3D con esas variables.")
+                        else:
+                            XX, YY, ZZ, dfit = surface_out
+        
+                            fig_surface = go.Figure()
+        
+                            fig_surface.add_trace(
+                                go.Surface(
+                                    x=XX,
+                                    y=YY,
+                                    z=ZZ,
+                                    opacity=0.88,
+                                    showscale=False,
+                                    hovertemplate=(
+                                        f"{_label(x_var)}=%{{x:.2f}}<br>"
+                                        f"{_label(y_var)}=%{{y:.2f}}<br>"
+                                        f"Predicción=%{{z:.2f}}<extra></extra>"
+                                    ),
+                                )
+                            )
+        
+                            if show_selected_surface:
+                                x0 = _coerce_numeric_series(pd.Series([row.get(x_var, np.nan)])).iloc[0]
+                                y0 = _coerce_numeric_series(pd.Series([row.get(y_var, np.nan)])).iloc[0]
+        
+                                if pd.notna(x0) and pd.notna(y0):
+                                    z0 = _predict_surface_point(
+                                        x_val=float(x0),
+                                        y_val=float(y0),
+                                        df_fit=dfit,
+                                        x_var=x_var,
+                                        y_var=y_var,
+                                        z_var=z_var,
+                                    )
+        
+                                    if z0 is not None:
+                                        fig_surface.add_trace(
+                                            go.Scatter3d(
+                                                x=[float(x0)],
+                                                y=[float(y0)],
+                                                z=[float(z0)],
+                                                mode="markers",
+                                                marker=dict(
+                                                    size=float(point_size),
+                                                    color="#111111",
+                                                    opacity=1.0,
+                                                    line=dict(width=4, color="white"),
+                                                ),
+                                                showlegend=False,
+                                                customdata=np.array([[
+                                                    str(row.get("nombre", "—")),
+                                                    str(row.get("codigo_nif", "—")),
+                                                    str(cluster_sel),
+                                                ]]),
+                                                hovertemplate=_hovertemplate_basic(),
+                                            )
+                                        )
+                                else:
+                                    st.info("La empresa seleccionada no tiene valores válidos en las variables X/Y elegidas.")
+        
+                            plotly_layout_base(fig_surface, height=620, margin=dict(l=20, r=20, t=60, b=20))
+                            fig_surface.update_layout(
+                                title=f"Interacción {_label(x_var)} × {_label(y_var)} (sobre {_label(z_var)})",
+                                scene=dict(
+                                    xaxis_title=_label(x_var),
+                                    yaxis_title=_label(y_var),
+                                    zaxis_title=_label(z_var),
+                                ),
+                                scene_camera=dict(eye=dict(x=1.45, y=1.35, z=1.0)),
+                            )
+        
+                            st.plotly_chart(fig_surface, use_container_width=True)
+                            st.caption("La superficie se estima con un modelo lineal con interacción: Z ~ X + Y + X·Y.")
+            except Exception as e:
+                st.error(f"No se pudo renderizar la superficie 3D: {e}")
 
         # ======================
         # Interpretación
