@@ -1,5 +1,9 @@
 # app.py
 import streamlit as st
+
+# ✅ SIEMPRE lo primero y SOLO una vez
+st.set_page_config(page_title="PCA + Clustering", layout="wide")
+
 import pandas as pd
 import plotly.io as pio
 
@@ -13,56 +17,34 @@ from utils.views.subgrupos import render_subgrupos
 from utils.views.cluster_textil import render_cluster_textil
 from utils.views.cuartiles import render_cuartiles
 
+from utils.ui import load_css  # ✅ SOLO load_css (nada de inject_responsive_css)
+
 
 # ============================================================
 # BRANDING: CSS + Plotly template
 # ============================================================
-def apply_brand_css(path: str = "assets/brand.css") -> None:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except FileNotFoundError:
-        pass
-
-
 def apply_plotly_brand_template() -> None:
-    brand_colors = [
-        "#6FA1D9",
-        "#415F7F",
-        "#2F475A",
-        "#534A50",
-        "#8E868A",
-        "#D9AA84",
-        "#BC6A3B",
-        "#BC523B",
-    ]
-    base = pio.templates["plotly_white"]
-    pio.templates["economicamente"] = base.update(
-        {
-            "layout": {
-                "font": {
-                    "family": "Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif",
-                    "color": "#000000",
-                },
-                "title": {"font": {"family": "Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif"}},
-                "colorway": brand_colors,
-                "paper_bgcolor": "#FFFFFF",
-                "plot_bgcolor": "#FFFFFF",
-                "xaxis": {"gridcolor": "rgba(47,71,90,0.12)", "zerolinecolor": "rgba(47,71,90,0.18)"},
-                "yaxis": {"gridcolor": "rgba(47,71,90,0.12)", "zerolinecolor": "rgba(47,71,90,0.18)"},
-                "legend": {"font": {"family": "Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif"}},
-            }
-        }
+    brand_colors = ["#6FA1D9","#415F7F","#2F475A","#534A50","#8E868A","#D9AA84","#BC6A3B","#BC523B"]
+
+    # ✅ Copia segura del template
+    pio.templates["economicamente"] = pio.templates["plotly_white"]
+
+    # ✅ Modifica SOLO layout
+    pio.templates["economicamente"].layout.update(
+        font=dict(family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif", color="#000000"),
+        title=dict(font=dict(family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif")),
+        colorway=brand_colors,
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        xaxis=dict(gridcolor="rgba(47,71,90,0.12)", zerolinecolor="rgba(47,71,90,0.18)"),
+        yaxis=dict(gridcolor="rgba(47,71,90,0.12)", zerolinecolor="rgba(47,71,90,0.18)"),
+        legend=dict(font=dict(family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif")),
     )
     pio.templates.default = "economicamente"
 
 
-# ============================================================
-# APP
-# ============================================================
-st.set_page_config(page_title="PCA + Clustering", layout="wide")
-
-apply_brand_css()
+# ✅ Cargar CSS (si existe) pero SIN tocar layout responsive agresivo
+load_css()
 apply_plotly_brand_template()
 
 st.title("Modelos de negocio: clustering")
@@ -82,7 +64,7 @@ vista = st.radio(
 )
 
 # ----------------------
-# Carga DF principal (cached por mtime)
+# Carga DF principal
 # ----------------------
 try:
     df = load_app_dataset(DATA_PATH)
@@ -97,14 +79,12 @@ if missing_required:
     st.stop()
 
 # ----------------------
-# (Opcional) Carga base completa (cached por mtime)
-# OJO: no la guardes en session_state; deja que el cache haga su trabajo
+# (Opcional) Carga base completa
 # ----------------------
 df_full: pd.DataFrame | None = None
 try:
     df_full = load_base_with_clusters(base_path=BASE_PATH, df_app=df)
 except Exception as e:
-    # No paramos la app: hay vistas que no la necesitan
     df_full = None
     st.warning(f"No pude cargar la base completa desde BASE_PATH (se seguirá sin ella): {e}")
 
@@ -114,12 +94,10 @@ with st.sidebar:
     comparar_con = st.radio("Comparar contra", ["Solo su cluster", "Total (todas)"], index=0)
     zoom = st.checkbox("Zoom al punto seleccionado", value=False)
 
-    # Botón útil cuando estás desarrollando (evita “no se actualiza”)
     if st.button("🔄 Forzar recarga (limpiar caché)", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-    # Índice: SOLO para las vistas que tienen anclas
     if vista in ["Resumen", "Subgrupos C1", "Sector textil"]:
         st.markdown("### Índice")
         st.markdown(
@@ -146,6 +124,41 @@ with st.sidebar:
         )
 
 # ----------------------
+# Base para cuartiles:
+# mismas empresas del clustering + todas las variables disponibles
+# ----------------------
+df_cuartiles: pd.DataFrame | None = None
+
+if df_full is not None and not df_full.empty:
+    merge_key = None
+    for k in ["empresa_key", "codigo_nif", "nif", "cif", "id_empresa", "id", "codigo", "nombre"]:
+        if k in df.columns and k in df_full.columns:
+            merge_key = k
+            break
+
+    if merge_key is not None:
+        # nos quedamos SOLO con las empresas que están en la muestra del clustering
+        ids_cluster = df[[merge_key]].drop_duplicates().copy()
+        df_cuartiles = df_full.merge(ids_cluster, on=merge_key, how="inner")
+
+        # por seguridad, si cluster_label no estuviera bien en df_full, lo rehacemos desde df
+        if "cluster_label" not in df_cuartiles.columns or df_cuartiles["cluster_label"].isna().all():
+            df_clusters = df[[merge_key, "cluster_label"]].drop_duplicates(subset=[merge_key])
+            df_cuartiles = df_cuartiles.drop(columns=["cluster_label"], errors="ignore").merge(
+                df_clusters, on=merge_key, how="left"
+            )
+
+        st.caption(
+            f"Base cuartiles: {len(df_cuartiles)} empresas "
+            f"(misma muestra que clustering) · {len(df_cuartiles.columns)} columnas"
+        )
+    else:
+        df_cuartiles = df.copy()
+else:
+    df_cuartiles = df.copy()
+
+
+# ----------------------
 # Routing
 # ----------------------
 if vista == "Resumen":
@@ -164,4 +177,4 @@ elif vista == "Sector textil":
     render_cluster_textil(df=df, base_path=BASE_PATH, comparar_con=comparar_con, zoom=zoom, k=3)
 
 elif vista == "Cuartiles":
-    render_cuartiles(df)
+    render_cuartiles(df_cuartiles, base_path=BASE_PATH)
