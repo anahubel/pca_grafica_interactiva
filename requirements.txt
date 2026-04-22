@@ -7,3 +7,8 @@ plotly
 duckdb
 fastparquet
 umap-learn
+streamlit
+pandas<3
+numpy
+plotly
+scikit-learn
