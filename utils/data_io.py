@@ -131,6 +131,3 @@ def load_base_with_clusters_cached(base_path: str, base_mtime: float, df_app: pd
 def load_base_with_clusters(base_path: str, df_app: pd.DataFrame) -> pd.DataFrame:
     """Wrapper cómodo: invalida cache cuando cambia la base."""
     return load_base_with_clusters_cached(base_path, _mtime(base_path), df_app)
-
-    out = base_df.merge(cl, on="codigo_nif", how="left")
-    return out
