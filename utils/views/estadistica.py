@@ -38,53 +38,6 @@ def _ui_caption(msg: str):
     if DEBUG_UI:
         st.caption(msg)
 
-
-# ============================================================
-# Plotly base layout: wrapper ROBUSTO (FIN de los errores)
-# ============================================================
-def _apply_plotly_base(fig: go.Figure, **kwargs) -> go.Figure:
-    """
-    Aplica plotly_layout_base de forma robusta sin importar el "contrato" actual:
-      - plotly_layout_base(fig, **kwargs) -> dict | Figure | None
-      - plotly_layout_base(**kwargs) -> dict (en algunos proyectos)
-      - si devuelve dict con {"layout":..., "data":...} (template), extrae solo layout
-      - elimina claves no válidas en layout (p.ej. "data")
-    """
-    out = None
-    try:
-        out = plotly_layout_base(fig, **kwargs)
-    except TypeError:
-        # Por si en tu utils.ui la firma fuera plotly_layout_base(**kwargs)
-        out = plotly_layout_base(**kwargs)
-
-    # Si devolvió una figura, úsala
-    if isinstance(out, go.Figure):
-        return out
-
-    # Si devolvió un dict (layout kwargs o template), lo aplicamos
-    if isinstance(out, dict):
-        # si viene como template completo
-        if "layout" in out and isinstance(out["layout"], dict):
-            out = out["layout"]
-        # jamás metas "data" en update_layout
-        out = {k: v for k, v in out.items() if k != "data"}
-        try:
-            fig.update_layout(**out)
-        except Exception:
-            # Si algo raro entra, filtramos solo claves simples
-            safe = {}
-            for k, v in out.items():
-                if k in {"height", "width", "margin", "title", "showlegend", "legend",
-                         "xaxis", "yaxis", "template", "paper_bgcolor", "plot_bgcolor",
-                         "font"}:
-                    safe[k] = v
-            fig.update_layout(**safe)
-        return fig
-
-    # Si devolvió None, asumimos que ya modificó la figura internamente
-    return fig
-
-
 # ======================
 # Labels helpers (UI)
 # ======================
@@ -104,7 +57,6 @@ def _make_label_maps(vars_list: list[str]):
             out_labels.append(lab)
     lab_to_var = {lab: v for lab, v in zip(out_labels, vars_list)}
     return out_labels, lab_to_var
-
 
 # ======================
 # Numeric parsing (robusto)
@@ -145,13 +97,9 @@ def _coerce_numeric_series(s: pd.Series) -> pd.Series:
 
     return pd.to_numeric(x, errors="coerce")
 
-
 def _to_display(var: str, s: pd.Series) -> pd.Series:
-    """
-    MODO SEGURO: no aplico escalados aquí para que no distorsione.
-    """
+    """MODO SEGURO: no aplico escalados aquí para que no distorsione."""
     return s
-
 
 # ======================
 # Read parquet ONLY (duckdb opcional)
@@ -162,7 +110,6 @@ def _has_duckdb() -> bool:
         return True
     except Exception:
         return False
-
 
 def _read_full_base(base_path: str) -> pd.DataFrame:
     """
@@ -259,7 +206,6 @@ def _read_full_base(base_path: str) -> pd.DataFrame:
 
     raise RuntimeError(f"No pude leer ningún parquet. Último archivo: {last_path}. Último error: {last_err}")
 
-
 def _best_merge_key(df_base: pd.DataFrame, df_clusters: pd.DataFrame) -> str | None:
     candidates = ["empresa_key", "codigo_nif", "nif", "cif", "id_empresa", "id", "codigo"]
     for k in candidates:
@@ -281,14 +227,12 @@ def _best_merge_key(df_base: pd.DataFrame, df_clusters: pd.DataFrame) -> str | N
             best = c
     return best
 
-
 def _normalize_key(s: pd.Series) -> pd.Series:
     x = s.astype(str).str.strip()
     x = x.str.replace(r"\.0$", "", regex=True)
     x = x.str.replace(r"\s+", "", regex=True)
     x = x.replace({"nan": np.nan, "None": np.nan})
     return x
-
 
 @st.cache_data(show_spinner=True)
 def _load_full_with_clusters_cached(base_path: str, df_clusters_key: pd.DataFrame) -> pd.DataFrame:
@@ -313,7 +257,6 @@ def _load_full_with_clusters_cached(base_path: str, df_clusters_key: pd.DataFram
     df_full = df_base.merge(dfc_keep, on=key, how="inner", validate="m:1")
     df_full = df_full[df_full["cluster_label"].notna()].copy()
     return df_full
-
 
 # ======================
 # Post-hoc helpers categóricas
@@ -355,16 +298,11 @@ def cramers_v_from_ct(ct: pd.DataFrame, chi2: float) -> float:
     denom = n * (min(r - 1, c - 1) if min(r - 1, c - 1) > 0 else 1)
     return float(np.sqrt(chi2 / denom)) if denom > 0 else np.nan
 
-
 # ======================
 # Caches estadísticos
 # ======================
 @st.cache_data(show_spinner=False)
-def _kw_table_cached(
-    df_small: pd.DataFrame,
-    vars_selected: tuple[str, ...],
-    clusters: tuple[str, ...],
-) -> pd.DataFrame:
+def _kw_table_cached(df_small: pd.DataFrame, vars_selected: tuple[str, ...], clusters: tuple[str, ...]) -> pd.DataFrame:
     from scipy.stats import kruskal
 
     out_rows = []
@@ -413,14 +351,8 @@ def _kw_table_cached(
 
     return pd.DataFrame(out_rows)
 
-
 @st.cache_data(show_spinner=False)
-def _posthoc_mwu_cached(
-    df_small: pd.DataFrame,
-    selected_var: str,
-    clusters: tuple[str, ...],
-    adj_method: str,
-) -> pd.DataFrame:
+def _posthoc_mwu_cached(df_small: pd.DataFrame, selected_var: str, clusters: tuple[str, ...], adj_method: str) -> pd.DataFrame:
     from scipy.stats import mannwhitneyu
 
     def cliffs_delta(x: np.ndarray, y: np.ndarray) -> float:
@@ -447,14 +379,8 @@ def _posthoc_mwu_cached(
     )
     return posthoc_df
 
-
 @st.cache_data(show_spinner=False)
-def _chi2_table_cached(
-    df_small_cat: pd.DataFrame,
-    vars_cat: tuple[str, ...],
-    agrupar_raras: bool,
-    umbral_raras: int,
-) -> tuple[pd.DataFrame, list]:
+def _chi2_table_cached(df_small_cat: pd.DataFrame, vars_cat: tuple[str, ...], agrupar_raras: bool, umbral_raras: int) -> tuple[pd.DataFrame, list]:
     from scipy.stats import chi2_contingency
 
     def format_contingency_like_report(ct: pd.DataFrame):
@@ -532,16 +458,10 @@ def _chi2_table_cached(
 
     return pd.DataFrame(res_rows), contingencias
 
-
 # ======================
 # MAIN VIEW
 # ======================
-def render_estadistica(
-    df: pd.DataFrame,
-    base_path: str,
-    group_col: str = "cluster_label",
-    title: str | None = None
-):
+def render_estadistica(df: pd.DataFrame, base_path: str, group_col: str = "cluster_label", title: str | None = None):
     if title:
         st.header(title)
 
@@ -662,7 +582,7 @@ def render_estadistica(
                     orientation="h",
                     labels={"ε²": "ε² (Kruskal–Wallis)", "Indicador": ""},
                 )
-                _apply_plotly_base(fig_eff, height=420, margin={"l": 10, "r": 10, "t": 10, "b": 10})
+                plotly_layout_base(fig_eff, height=420, margin=dict(l=10, r=10, t=10, b=10))
                 fig_eff.update_traces(hovertemplate="%{y}<br>ε²=%{x:.3f}<extra></extra>")
                 enforce_no_extra(fig_eff)
                 st.plotly_chart(fig_eff, use_container_width=True)
@@ -736,7 +656,7 @@ def render_estadistica(
                     category_orders={"cluster_label": order},
                     labels={"cluster_label": "Clúster", "Valor": _label_of(selected_var)},
                 )
-                _apply_plotly_base(fig_dist, height=420, margin={"l": 10, "r": 10, "t": 10, "b": 10})
+                plotly_layout_base(fig_dist, height=420, margin=dict(l=10, r=10, t=10, b=10))
                 fig_dist.update_traces(hovertemplate="Clúster=%{x}<br>Valor=%{y}<extra></extra>")
                 enforce_no_extra(fig_dist)
                 st.plotly_chart(fig_dist, use_container_width=True)
@@ -768,11 +688,11 @@ def render_estadistica(
                             opacity=0.25,
                         )
 
-                    _apply_plotly_base(
+                    plotly_layout_base(
                         fig_iqr,
                         height=280,
-                        margin={"l": 10, "r": 10, "t": 10, "b": 10},
-                        legend={"orientation": "h", "y": -0.25},
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        legend=dict(orientation="h", y=-0.25),
                         xaxis_title=_label_of(selected_var),
                         yaxis_title="",
                         showlegend=False,
@@ -903,7 +823,7 @@ def render_estadistica(
                     orientation="h",
                     labels={"V de Cramér": "V de Cramér", "Variable": ""},
                 )
-                _apply_plotly_base(fig_v, height=420, margin={"l": 10, "r": 10, "t": 10, "b": 10})
+                plotly_layout_base(fig_v, height=420, margin=dict(l=10, r=10, t=10, b=10))
                 fig_v.update_traces(hovertemplate="%{y}<br>V=%{x:.3f}<extra></extra>")
                 enforce_no_extra(fig_v)
                 st.plotly_chart(fig_v, use_container_width=True)
@@ -1159,13 +1079,13 @@ def render_estadistica(
                         barmode="stack",
                         text=pct_long["Pct"].map(lambda x: "" if x < 6 else f"{x:.0f}%"),
                     )
-                    _apply_plotly_base(
+                    plotly_layout_base(
                         fig,
                         height=260,
-                        margin={"l": 10, "r": 10, "t": 10, "b": 10},
+                        margin=dict(l=10, r=10, t=10, b=10),
                         xaxis_title="%",
                         yaxis_title="",
-                        legend={"orientation": "h", "y": -0.25},
+                        legend=dict(orientation="h", y=-0.25),
                     )
                     fig.update_xaxes(range=[0, 100])
                     fig.update_traces(hovertemplate="Cluster=%{y}<br>%=%{x:.1f}<extra></extra>")

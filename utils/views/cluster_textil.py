@@ -386,6 +386,3 @@ def render_cluster_textil(
         file_name="textil_clusters_k3_pipeline.csv",
         mime="text/csv",
     )
-
-# Alias para compatibilidad (por si app.py importa render_cluster_textil)
-render_cluster_textil = render_cluster_textil
