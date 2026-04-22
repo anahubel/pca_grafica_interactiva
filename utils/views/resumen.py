@@ -1101,7 +1101,7 @@ def render_resumen(
                     return "color: #6b7280; font-weight: 700;"
                 return ""
 
-            styled = stats_show.style.applymap(color_flag, subset=["vs mediana"])
+            styled = stats_show.style.map(color_flag, subset=["vs mediana"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
             st.warning("No hay indicadores para mostrar.")
