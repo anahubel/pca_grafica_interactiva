@@ -602,7 +602,7 @@ def render_estadistica(df: pd.DataFrame, base_path: str, group_col: str = "clust
             "Estadístico (K-W)": lambda x: "" if pd.isna(x) else f"{float(x):.2f}",
             "P-valor": fmt_p,
             "ε²": lambda x: "" if pd.isna(x) else f"{float(x):.3f}",
-        }).applymap(bold_p, subset=["P-valor"])
+        }).map(bold_p, subset=["P-valor"])
 
         try:
             ev = st.dataframe(
